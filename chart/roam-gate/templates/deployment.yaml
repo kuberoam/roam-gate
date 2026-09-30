@@ -1,0 +1,160 @@
+{{- $tls := ne .Values.tls.mode "none" -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "gate.name" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gate.labels" . | nindent 4 }}
+spec:
+  # One replica: the database is SQLite on a ReadWriteOnce volume.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "gate.selector" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "gate.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ printf "%s|%s|%s" (toJson .Values) (include "gate.externalURL" .) .Chart.AppVersion | sha256sum | trunc 16 }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "gate.name" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gate
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8443
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: GOMEMLIMIT
+              valueFrom:
+                resourceFieldRef:
+                  resource: limits.memory
+                  divisor: "1"
+            - name: GATE_EXTERNAL_URL
+              value: {{ include "gate.externalURL" . | quote }}
+            - name: GATE_CLUSTER_NAME
+              value: {{ .Values.clusterName | default "kubernetes" | quote }}
+            - name: GATE_DATA_DIR
+              value: /data
+            - name: GATE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "gate.name" . }}-secrets
+                  key: secret-key
+            - name: GATE_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "gate.name" . }}-secrets
+                  key: admin-token
+            - name: GATE_ADMIN_USERS
+              value: {{ join "," .Values.admins.users | quote }}
+            - name: GATE_ADMIN_GROUPS
+              value: {{ join "," .Values.admins.groups | quote }}
+            - name: GATE_SESSION_TTL
+              value: {{ .Values.session.ttl | quote }}
+            - name: GATE_AUDIT_LEVEL
+              value: {{ .Values.audit.level | quote }}
+            - name: GATE_AUDIT_RETENTION
+              value: {{ .Values.audit.retention | quote }}
+            - name: GATE_RECONCILE_INTERVAL
+              value: {{ .Values.reconcileInterval | quote }}
+            {{- if $tls }}
+            - name: GATE_TLS_CERT
+              value: /tls/tls.crt
+            - name: GATE_TLS_KEY
+              value: /tls/tls.key
+            {{- if or (eq .Values.tls.mode "selfSigned") .Values.tls.secretHasCA }}
+            - name: GATE_CA_FILE
+              value: /tls/ca.crt
+            {{- end }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+              scheme: {{ include "gate.scheme" . }}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+              scheme: {{ include "gate.scheme" . }}
+            periodSeconds: 30
+            failureThreshold: 4
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+            {{- if $tls }}
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | default (printf "%s-data" (include "gate.name" .)) }}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        {{- if $tls }}
+        - name: tls
+          secret:
+            secretName: {{ include "gate.tlsSecret" . }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

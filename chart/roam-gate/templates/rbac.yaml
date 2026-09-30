@@ -1,0 +1,71 @@
+# Gate acts for signed-in people by impersonation: the API server applies their
+# RBAC. It writes only the (Cluster)RoleBindings it owns (labelled
+# kuberoam.dev/managed-by=roam-gate) — bind lets it reference any ClusterRole.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "gate.name" . }}
+  labels:
+    {{- include "gate.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [users, groups]
+    verbs: [impersonate]
+  - apiGroups: [authentication.k8s.io]
+    resources: [userextras/roam-gate-session]
+    verbs: [impersonate]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [clusterrolebindings, rolebindings]
+    verbs: [get, list, create, update, patch, delete]
+  - apiGroups: [rbac.authorization.k8s.io]
+    resources: [clusterroles]
+    verbs: [get, list, bind]
+  - apiGroups: [""]
+    resources: [namespaces]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "gate.name" . }}
+  labels:
+    {{- include "gate.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "gate.name" . }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "gate.name" . }}
+    namespace: {{ .Release.Namespace }}
+{{- if .Values.eks.awsAuth }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "gate.name" . }}-aws-auth
+  namespace: kube-system
+  labels:
+    {{- include "gate.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [aws-auth]
+    verbs: [get, update, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "gate.name" . }}-aws-auth
+  namespace: kube-system
+  labels:
+    {{- include "gate.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "gate.name" . }}-aws-auth
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "gate.name" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

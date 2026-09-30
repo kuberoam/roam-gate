@@ -1,0 +1,5 @@
+/dist/
+/roam-gate
+*.db
+*.db-*
+/data/

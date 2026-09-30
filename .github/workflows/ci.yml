@@ -1,0 +1,22 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test -race ./...
+      - uses: azure/setup-helm@v4
+      - run: |
+          helm lint chart/roam-gate
+          helm template t chart/roam-gate -n roam-system > /dev/null
+          helm template t chart/roam-gate -n roam-system --set tls.mode=none,ingress.enabled=true,ingress.host=gate.example.com,eks.awsAuth=true > /dev/null

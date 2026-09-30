@@ -1,0 +1,36 @@
+{{- if eq .Values.tls.mode "selfSigned" -}}
+{{- $name := include "gate.tlsSecret" . -}}
+{{- $old := lookup "v1" "Secret" .Release.Namespace $name -}}
+{{- $full := include "gate.name" . -}}
+{{- $ns := .Release.Namespace -}}
+{{- $dns := list "localhost" $full (printf "%s.%s" $full $ns) (printf "%s.%s.svc" $full $ns) (printf "%s.%s.svc.cluster.local" $full $ns) -}}
+{{- if .Values.ingress.host }}{{ $dns = append $dns .Values.ingress.host }}{{ end -}}
+{{- $ext := urlParse (include "gate.externalURL" .) -}}
+{{- $extHost := regexReplaceAll ":[0-9]+$" $ext.host "" -}}
+{{- $ips := concat (list "127.0.0.1") .Values.tls.extraIPs -}}
+{{- if regexMatch "^[0-9.]+$" $extHost }}{{ $ips = append $ips $extHost }}{{ else }}{{ $dns = append $dns $extHost }}{{ end -}}
+{{- $dns = concat $dns .Values.tls.extraDNSNames | uniq -}}
+{{- $sans := printf "%s|%s" (join "," $dns) (join "," ($ips | uniq)) -}}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gate.labels" . | nindent 4 }}
+  annotations:
+    kuberoam.dev/sans: {{ $sans | quote }}
+type: kubernetes.io/tls
+data:
+{{- if and $old (eq (index $old.metadata.annotations "kuberoam.dev/sans" | default "") $sans) }}
+  ca.crt: {{ index $old.data "ca.crt" }}
+  tls.crt: {{ index $old.data "tls.crt" }}
+  tls.key: {{ index $old.data "tls.key" }}
+{{- else }}
+{{- $ca := genCA (printf "%s CA" $full) 3650 }}
+{{- $cert := genSignedCert $full $ips $dns 3650 $ca }}
+  ca.crt: {{ $ca.Cert | b64enc }}
+  tls.crt: {{ $cert.Cert | b64enc }}
+  tls.key: {{ $cert.Key | b64enc }}
+{{- end }}
+{{- end }}

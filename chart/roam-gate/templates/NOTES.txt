@@ -1,0 +1,11 @@
+Roam Gate is installed in namespace {{ .Release.Namespace }}.
+
+Gate URL: {{ include "gate.externalURL" . }}
+{{- if not (or .Values.externalURL .Values.ingress.enabled) }}
+  (reach it with: kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "gate.name" . }} 8443:{{ .Values.service.port }})
+{{- end }}
+
+Next: open Roam → Access control to add sign-in providers and permissions, or use
+the bootstrap admin token with the API:
+
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "gate.name" . }}-secrets -o jsonpath='{.data.admin-token}' | base64 -d

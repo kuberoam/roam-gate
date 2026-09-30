@@ -1,0 +1,93 @@
+# Roam Gate — install into its own namespace:
+#   helm install roam-gate oci://ghcr.io/kuberoam/charts/roam-gate -n roam-system --create-namespace
+
+image:
+  repository: ghcr.io/kuberoam/roam-gate
+  # Defaults to the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# How people reach Gate (sign-in pages, the /k8s proxy in issued kubeconfigs).
+# Defaults to https://<ingress.host> with an Ingress, otherwise https://localhost:8443
+# (kubectl port-forward -n roam-system svc/roam-gate 8443:443).
+externalURL: ""
+# Shown on the sign-in page and used as the cluster/context name in kubeconfigs.
+clusterName: ""
+
+# Who may administer Gate once SSO is configured. Users are Gate user IDs
+# (verified email, or "<provider>:<login>"); groups are "<provider>:<group>",
+# e.g. "github:acme/platform". The bootstrap admin token in the
+# <release>-secrets Secret always works — Roam uses it right after install.
+admins:
+  users: []
+  groups: []
+
+session:
+  ttl: 12h
+
+audit:
+  # writes: changes, exec/attach/port-forward/proxy, Secret access and every denied
+  #         request. all: every request, reads included (much more storage).
+  # Sign-ins, sessions and admin changes are always recorded.
+  level: writes
+  retention: 90d
+
+reconcileInterval: 2m
+
+tls:
+  # selfSigned: Helm generates a CA and certificate (kept across upgrades); issued
+  #             kubeconfigs embed the CA.
+  # secret:     use an existing kubernetes.io/tls Secret (e.g. from cert-manager).
+  # none:       plain HTTP inside the cluster; terminate TLS at the Ingress.
+  mode: selfSigned
+  secretName: ""
+  # With mode "secret": embed the Secret's ca.crt in kubeconfigs (private CAs).
+  secretHasCA: false
+  # Extra names for the self-signed certificate.
+  extraDNSNames: []
+  extraIPs: []
+
+service:
+  type: ClusterIP
+  port: 443
+  annotations: {}
+  loadBalancerSourceRanges: []
+
+ingress:
+  enabled: false
+  className: ""
+  host: ""
+  annotations: {}
+  # TLS Secret for the Ingress (e.g. created by cert-manager via annotations).
+  tlsSecretName: ""
+
+persistence:
+  # SQLite database: providers, users, bindings, sessions and the audit trail.
+  enabled: true
+  size: 2Gi
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  existingClaim: ""
+  # Keep the volume (and its audit trail) when the release is uninstalled.
+  keep: true
+
+# EKS clusters that still use the aws-auth ConfigMap: lets Gate map IAM roles/users
+# to Gate bindings. Gate only adds and removes its own entries ("roam:aws:*").
+eks:
+  awsAuth: false
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    memory: 256Mi
+
+extraEnv: []
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+priorityClassName: ""

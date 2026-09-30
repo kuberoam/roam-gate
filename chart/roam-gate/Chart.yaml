@@ -1,0 +1,16 @@
+apiVersion: v2
+name: roam-gate
+description: Lightweight access control for Kubernetes — SSO sign-in, per-user and per-group permissions and an audit trail, in one small pod.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/kuberoam/roam-gate
+sources:
+  - https://github.com/kuberoam/roam-gate
+keywords: [kubernetes, rbac, sso, oidc, ldap, audit, access-control, roam]
+maintainers:
+  - name: Roam
+    email: richardpham201@gmail.com
+    url: https://github.com/kuberoam
+annotations:
+  artifacthub.io/license: Apache-2.0
