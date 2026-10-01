@@ -152,6 +152,14 @@ func TestSignInProxyAndAudit(t *testing.T) {
 	if resp, b := call("GET", "/api/v1/providers", "bootstrap-admin-token", ""); !strings.Contains(string(b), auth.SecretPlaceholder) || strings.Contains(string(b), "shh") {
 		t.Fatalf("secrets must be redacted: %d %s", resp.StatusCode, b)
 	}
+	// Through the API server's service proxy Authorization is dropped, so Roam
+	// sends the token in its own header, with who is behind the call.
+	hreq, _ := http.NewRequest("POST", gate.URL+"/api/v1/bindings", strings.NewReader(`{"subjectKind":"group","subject":"mock:ops","role":"view","scope":"cluster"}`))
+	hreq.Header.Set(auth.TokenHeader, "bootstrap-admin-token")
+	hreq.Header.Set(auth.ActorHeader, "roam: kind-admin\t")
+	if hr, err := http.DefaultClient.Do(hreq); err != nil || hr.StatusCode != 200 {
+		t.Fatalf("token header: %v %v", err, hr)
+	}
 	if resp, _ := call("GET", "/api/v1/providers", "", ""); resp.StatusCode != 401 {
 		t.Fatalf("admin API without a token: %d", resp.StatusCode)
 	}
@@ -249,6 +257,15 @@ func TestSignInProxyAndAudit(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Errorf("audit is missing %s: %s", want, joined)
 		}
+	}
+	actorSeen := false
+	for _, e := range events {
+		if e.User == "admin (bootstrap token) · roam: kind-admin" {
+			actorSeen = true
+		}
+	}
+	if !actorSeen {
+		t.Errorf("the actor header should show in the audit trail")
 	}
 	if strings.Contains(joined, "request/list/pods/ok") {
 		t.Errorf("reads should not be recorded at level writes: %s", joined)

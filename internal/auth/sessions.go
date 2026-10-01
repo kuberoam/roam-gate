@@ -45,8 +45,17 @@ func BearerToken(r *http.Request) string {
 	if len(h) > 7 && strings.EqualFold(h[:7], "bearer ") {
 		return strings.TrimSpace(h[7:])
 	}
-	return ""
+	return strings.TrimSpace(r.Header.Get(TokenHeader))
 }
+
+// TokenHeader carries the token when Authorization can't: the Kubernetes API
+// server's service proxy (how Roam reaches Gate) drops Authorization.
+const TokenHeader = "X-Roam-Gate-Token"
+
+// ActorHeader names who is behind a bootstrap-token call (Roam sends the
+// person's cluster identity), for the audit trail. Only holders of the
+// bootstrap token can set it, and they are admins anyway.
+const ActorHeader = "X-Roam-Gate-Actor"
 
 // Start signs someone in: records the user and returns a new session token.
 func (s *Sessions) Start(ctx context.Context, id *identity.Identity, ip, ua string) (string, *store.Session, error) {
@@ -87,11 +96,15 @@ func (s *Sessions) Authenticate(r *http.Request) (*store.Session, error) {
 type Principal struct {
 	Session *store.Session // nil for the bootstrap admin
 	Admin   bool
+	Actor   string // bootstrap admin only: who said they are behind the call
 }
 
 // Name is how the principal appears in the audit trail.
 func (p *Principal) Name() string {
 	if p.Session == nil {
+		if p.Actor != "" {
+			return "admin (bootstrap token) · " + p.Actor
+		}
 		return "admin (bootstrap token)"
 	}
 	return p.Session.User
@@ -101,7 +114,16 @@ func (p *Principal) Name() string {
 func (s *Sessions) Principal(r *http.Request) (*Principal, error) {
 	token := BearerToken(r)
 	if s.adminToken != "" && token != "" && secure.Equal(token, s.adminToken) {
-		return &Principal{Admin: true}, nil
+		actor := strings.Map(func(r rune) rune {
+			if r < 0x20 || r == 0x7f {
+				return -1
+			}
+			return r
+		}, strings.TrimSpace(r.Header.Get(ActorHeader)))
+		if len(actor) > 120 {
+			actor = actor[:120]
+		}
+		return &Principal{Admin: true, Actor: actor}, nil
 	}
 	sess, err := s.Authenticate(r)
 	if err != nil {

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/kuberoam/roam-gate/internal/audit"
+	"github.com/kuberoam/roam-gate/internal/auth"
 	"github.com/kuberoam/roam-gate/internal/config"
 	"github.com/kuberoam/roam-gate/internal/identity"
 	"github.com/kuberoam/roam-gate/internal/store"
@@ -130,6 +131,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	r.Header.Del("Authorization")
+	r.Header.Del(auth.TokenHeader)
+	r.Header.Del(auth.ActorHeader)
 	r.Header.Set("Impersonate-User", identity.KubeUser(sess.User))
 	for _, g := range identity.KubeGroups(sess.Groups) {
 		r.Header.Add("Impersonate-Group", g)

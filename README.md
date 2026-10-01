@@ -117,7 +117,7 @@ Or open `https://<gate>/login` in a browser and download a ready-made kubeconfig
 
 ## API
 
-All endpoints take `Authorization: Bearer <token>`; admin endpoints need an admin session or the bootstrap token.
+All endpoints take `Authorization: Bearer <token>` (or `X-Roam-Gate-Token: <token>` — the Kubernetes API server's service proxy drops `Authorization`); admin endpoints need an admin session or the bootstrap token.
 
 | | |
 | - | - |
