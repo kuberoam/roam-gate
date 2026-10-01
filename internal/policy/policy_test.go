@@ -160,6 +160,11 @@ func TestValidate(t *testing.T) {
 		{SubjectKind: store.SubjectUser, Subject: "a", Role: "", Scope: store.ScopeCluster},
 		{SubjectKind: store.SubjectUser, Subject: "a", Role: "view", Scope: store.ScopeNamespaces},
 		{SubjectKind: store.SubjectAWS, Subject: "arn:aws:sts::111122223333:assumed-role/x/y", Role: "view", Scope: store.ScopeCluster},
+		{SubjectKind: store.SubjectK8sGroup, Subject: "system:authenticated", Role: "view", Scope: store.ScopeCluster},   // everyone
+		{SubjectKind: store.SubjectK8sGroup, Subject: "system:unauthenticated", Role: "view", Scope: store.ScopeCluster}, // even anonymous
+		{SubjectKind: store.SubjectK8sUser, Subject: "roam:alice@corp.com", Role: "view", Scope: store.ScopeCluster},     // use kind user
+		{SubjectKind: store.SubjectUser, Subject: "a", Role: "view", Scope: store.ScopeNamespaces, Namespaces: []string{"Prod_1"}},
+		{SubjectKind: store.SubjectUser, Subject: "a", Role: "../admin", Scope: store.ScopeCluster},
 	}
 	for _, b := range bad {
 		if err := Validate(&b); err == nil {
@@ -169,5 +174,9 @@ func TestValidate(t *testing.T) {
 	ok := store.Binding{SubjectKind: store.SubjectK8sGroup, Subject: "devs@corp.com", Role: "view", Scope: store.ScopeCluster, Namespaces: []string{"x"}}
 	if err := Validate(&ok); err != nil || ok.Namespaces != nil {
 		t.Fatalf("%v %v", err, ok.Namespaces)
+	}
+	dup := store.Binding{SubjectKind: store.SubjectUser, Subject: "a", Role: " system:aggregate-to-view ", Scope: store.ScopeNamespaces, Namespaces: []string{"b", "a", "b"}}
+	if err := Validate(&dup); err != nil || len(dup.Namespaces) != 2 || dup.Role != "system:aggregate-to-view" {
+		t.Fatalf("normalised: %v %+v", err, dup)
 	}
 }

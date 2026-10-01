@@ -2,8 +2,6 @@ package auth
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -11,6 +9,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/kuberoam/roam-gate/internal/identity"
+	"github.com/kuberoam/roam-gate/internal/msg"
 	"github.com/kuberoam/roam-gate/internal/store"
 )
 
@@ -64,12 +63,12 @@ func newOIDC(ctx context.Context, sp *store.Provider, c OIDCConfig, callbackURL 
 		c.GroupsClaim = "groups"
 	}
 	if c.Issuer == "" || c.ClientID == "" {
-		return nil, errors.New("issuer and clientId are required")
+		return nil, msg.New(msg.ProviderRequired, "fields", "issuer, clientId")
 	}
 	c.Issuer = strings.TrimRight(c.Issuer, "/")
 	p, err := oidc.NewProvider(oidc.ClientContext(ctx, httpClient), c.Issuer)
 	if err != nil {
-		return nil, fmt.Errorf("OIDC discovery for %s: %w", c.Issuer, err)
+		return nil, msg.Wrap(msg.OIDCDiscovery, err, "issuer", c.Issuer)
 	}
 	return &oidcProvider{
 		info: sp,
@@ -91,23 +90,23 @@ func (p *oidcProvider) AuthURL(state, nonce, verifier string) string {
 
 func (p *oidcProvider) Finish(ctx context.Context, r *http.Request, nonce, verifier string) (*identity.Identity, error) {
 	if e := r.URL.Query().Get("error"); e != "" {
-		return nil, fmt.Errorf("%s: %s", e, r.URL.Query().Get("error_description"))
+		return nil, providerRefused(e, r.URL.Query().Get("error_description"))
 	}
 	ctx = oidc.ClientContext(ctx, httpClient)
 	tok, err := p.oauth.Exchange(ctx, r.URL.Query().Get("code"), oauth2.VerifierOption(verifier))
 	if err != nil {
-		return nil, fmt.Errorf("exchanging the code: %w", err)
+		return nil, msg.Wrap(msg.CodeExchange, err)
 	}
 	raw, _ := tok.Extra("id_token").(string)
 	if raw == "" {
-		return nil, errors.New("the provider returned no ID token")
+		return nil, msg.New(msg.NoIDToken)
 	}
 	idt, err := p.verifier.Verify(ctx, raw)
 	if err != nil {
-		return nil, fmt.Errorf("ID token: %w", err)
+		return nil, msg.Wrap(msg.IDTokenInvalid, err)
 	}
 	if idt.Nonce != nonce {
-		return nil, errors.New("ID token nonce does not match")
+		return nil, msg.New(msg.NonceMismatch)
 	}
 	claims := map[string]any{}
 	if err := idt.Claims(&claims); err != nil {
@@ -128,7 +127,8 @@ func (p *oidcProvider) Finish(ctx context.Context, r *http.Request, nonce, verif
 	}
 	id := &identity.Identity{Provider: p.info.ID, Subject: idt.Subject, Name: str(claims["name"])}
 	if email := str(claims["email"]); email != "" {
-		if verified, ok := claims["email_verified"].(bool); (ok && verified) || p.cfg.InsecureSkipEmailVerified || (p.info.Type == TypeGitLab && !ok) {
+		// Only verified emails identify people: an unverified one could be anyone's.
+		if verified, ok := claims["email_verified"].(bool); (ok && verified) || p.cfg.InsecureSkipEmailVerified {
 			id.Email = email
 		}
 	}

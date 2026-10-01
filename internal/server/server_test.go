@@ -24,6 +24,7 @@ import (
 	"github.com/kuberoam/roam-gate/internal/auth"
 	"github.com/kuberoam/roam-gate/internal/config"
 	"github.com/kuberoam/roam-gate/internal/kube"
+	"github.com/kuberoam/roam-gate/internal/msg"
 	"github.com/kuberoam/roam-gate/internal/policy"
 	"github.com/kuberoam/roam-gate/internal/proxy"
 	"github.com/kuberoam/roam-gate/internal/store"
@@ -164,8 +165,20 @@ func TestSignInProxyAndAudit(t *testing.T) {
 		t.Fatalf("admin API without a token: %d", resp.StatusCode)
 	}
 
-	// An app signs in: start a request, the browser signs in, the app collects the token.
-	_, b := call("POST", "/api/v1/login-requests", "", "")
+	// Only a loopback address can receive the sign-in code.
+	if resp, b := call("POST", "/api/v1/login-requests", "", `{"returnURL":"https://evil.example/cb"}`); resp.StatusCode != 400 || !strings.Contains(string(b), string(msg.ReturnURLInvalid)) {
+		t.Fatalf("non-loopback return: %d %s", resp.StatusCode, b)
+	}
+
+	// An app signs in: it listens on loopback, starts a request, the browser
+	// signs in and comes back to the app with a one-time code.
+	codes := make(chan string, 1)
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		codes <- r.URL.Query().Get("code")
+		w.Write([]byte("back in the app"))
+	}))
+	defer app.Close()
+	_, b := call("POST", "/api/v1/login-requests", "", `{"returnURL":"`+app.URL+`/cb"}`)
 	var lr struct{ ID, PollSecret, URL string }
 	json.Unmarshal(b, &lr)
 	jar, _ := cookiejar.New(nil)
@@ -176,13 +189,18 @@ func TestSignInProxyAndAudit(t *testing.T) {
 	}
 	page, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
-	if resp.StatusCode != 200 || !strings.Contains(string(page), "signed in") {
-		t.Fatalf("sign-in page: %d %s", resp.StatusCode, page)
+	if resp.StatusCode != 200 || string(page) != "back in the app" {
+		t.Fatalf("return to app: %d %s", resp.StatusCode, page)
 	}
-	_, b = call("POST", "/api/v1/login-requests/"+lr.ID+"/collect", "", `{"pollSecret":"`+lr.PollSecret+`"}`)
+	code := <-codes
+	// Whoever only has the poll secret (someone who sent the link) gets nothing.
+	if resp, _ := call("POST", "/api/v1/login-requests/"+lr.ID+"/collect", "", `{"pollSecret":"`+lr.PollSecret+`","code":"guess"}`); resp.StatusCode != 400 {
+		t.Fatalf("collect without the code: %d", resp.StatusCode)
+	}
+	_, b = call("POST", "/api/v1/login-requests/"+lr.ID+"/collect", "", `{"pollSecret":"`+lr.PollSecret+`","code":"`+code+`"}`)
 	var col struct{ State, Token string }
 	json.Unmarshal(b, &col)
-	if col.State != "done" || !strings.HasPrefix(col.Token, auth.TokenPrefix) {
+	if col.State != store.LoginDone || !strings.HasPrefix(col.Token, auth.TokenPrefix) {
 		t.Fatalf("collect: %s", b)
 	}
 	token := col.Token
@@ -271,9 +289,39 @@ func TestSignInProxyAndAudit(t *testing.T) {
 		t.Errorf("reads should not be recorded at level writes: %s", joined)
 	}
 
+	// Errors come in the caller's language, with a stable code.
+	vreq, _ := http.NewRequest("POST", gate.URL+"/api/v1/bindings", strings.NewReader(`{"subjectKind":"group","subject":"x","role":"view","scope":"namespaces"}`))
+	vreq.Header.Set("Authorization", "Bearer bootstrap-admin-token")
+	vreq.Header.Set("Accept-Language", "vi-VN,vi;q=0.9")
+	vresp, err := http.DefaultClient.Do(vreq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ve struct{ Error, Code string }
+	json.NewDecoder(vresp.Body).Decode(&ve)
+	vresp.Body.Close()
+	if vresp.StatusCode != 400 || ve.Code != string(msg.NamespacesRequired) || !strings.Contains(ve.Error, "namespace") || !strings.HasPrefix(ve.Error, "Chọn") {
+		t.Fatalf("localized error: %d %+v", vresp.StatusCode, ve)
+	}
+
 	// Logging out ends the token.
-	call("POST", "/api/v1/logout", token, "")
+	if resp, _ := call("POST", "/api/v1/logout", token, ""); resp.StatusCode != 204 {
+		t.Fatalf("logout: %d", resp.StatusCode)
+	}
 	if resp, _ := call("GET", "/k8s/api/v1/pods", token, ""); resp.StatusCode != 401 {
 		t.Fatalf("after logout: %d", resp.StatusCode)
+	}
+
+	// Deleting the sign-in method ends the sessions it started, right away.
+	now := time.Now()
+	st.CreateSession(ctx, &store.Session{ID: "other", User: "bob@corp.com", Provider: "mock", Created: now, Expires: now.Add(time.Hour)}, "rg_other")
+	if resp, _ := call("GET", "/k8s/api/v1/pods", "rg_other", ""); resp.StatusCode != 200 {
+		t.Fatalf("before deleting the provider: %d", resp.StatusCode)
+	}
+	if resp, _ := call("DELETE", "/api/v1/providers/mock", "bootstrap-admin-token", ""); resp.StatusCode != 204 {
+		t.Fatalf("delete provider: %d", resp.StatusCode)
+	}
+	if resp, _ := call("GET", "/k8s/api/v1/pods", "rg_other", ""); resp.StatusCode != 401 {
+		t.Fatalf("after deleting the provider: %d", resp.StatusCode)
 	}
 }

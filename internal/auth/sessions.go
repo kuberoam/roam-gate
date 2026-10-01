@@ -2,13 +2,13 @@ package auth
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/kuberoam/roam-gate/internal/identity"
+	"github.com/kuberoam/roam-gate/internal/msg"
 	"github.com/kuberoam/roam-gate/internal/secure"
 	"github.com/kuberoam/roam-gate/internal/store"
 )
@@ -16,7 +16,7 @@ import (
 // TokenPrefix marks Gate session tokens ("rg_…").
 const TokenPrefix = "rg_"
 
-var ErrUnauthenticated = errors.New("not signed in")
+var ErrUnauthenticated = msg.New(msg.NotSignedIn)
 
 // Sessions issues and checks session tokens.
 type Sessions struct {
@@ -61,7 +61,7 @@ const ActorHeader = "X-Roam-Gate-Actor"
 func (s *Sessions) Start(ctx context.Context, id *identity.Identity, ip, ua string) (string, *store.Session, error) {
 	userID := id.UserID()
 	if u, err := s.st.User(ctx, userID); err == nil && u.Disabled {
-		return "", nil, errors.New("this account is disabled in Roam Gate")
+		return "", nil, msg.New(msg.AccountDisabled)
 	}
 	groups := id.GroupIDs()
 	if err := s.st.SeenUser(ctx, &store.User{ID: userID, Provider: id.Provider, Name: id.Name, Email: id.Email, Groups: groups}); err != nil {

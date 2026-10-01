@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kuberoam/roam-gate/internal/msg"
 	"github.com/kuberoam/roam-gate/internal/secure"
 	_ "modernc.org/sqlite"
 )
@@ -55,6 +56,9 @@ func Open(dir string, key []byte) (*Store, error) {
 }
 
 func (s *Store) Close() error { return s.db.Close() }
+
+// Ping checks the database answers (readiness).
+func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
 
 func (s *Store) migrate() error {
 	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied INTEGER NOT NULL)`); err != nil {
@@ -153,7 +157,7 @@ func (s *Store) scanProvider(row interface{ Scan(...any) error }) (*Provider, er
 	}
 	cfg, err := s.box.Open(sealed)
 	if err != nil {
-		return nil, fmt.Errorf("provider %s: cannot decrypt its settings (was GATE_SECRET_KEY changed?)", p.ID)
+		return nil, msg.New(msg.ProviderDecrypt, "id", p.ID)
 	}
 	p.Config, p.Created, p.Updated = cfg, fromMs(created), fromMs(updated)
 	return &p, nil
@@ -370,69 +374,113 @@ func (s *Store) RevokeSession(ctx context.Context, id string) error {
 	return one(s.db.ExecContext(ctx, `UPDATE sessions SET revoked = 1 WHERE id = ?`, id))
 }
 
-// ------------------------------------------------------------ login requests
-
-// LoginRequest lets an app (Roam, a CLI) sign in through the browser: it
-// starts a request, the user signs in, and the app collects the token once.
-type LoginRequest struct {
-	ID      string
-	Expires time.Time
-	State   string // pending | done | failed
-	Error   string
+// RevokeProviderSessions ends every live session started through a provider
+// (it was deleted or turned off) and returns how many.
+func (s *Store) RevokeProviderSessions(ctx context.Context, provider string) (int64, error) {
+	r, err := s.db.ExecContext(ctx, `UPDATE sessions SET revoked = 1 WHERE provider = ? AND revoked = 0 AND expires > ?`, provider, ms(time.Now()))
+	if err != nil {
+		return 0, err
+	}
+	return r.RowsAffected()
 }
 
-func (s *Store) CreateLoginRequest(ctx context.Context, id, pollSecret string, ttl time.Duration) error {
+// ------------------------------------------------------------ login requests
+
+// Login request states.
+const (
+	LoginPending = "pending"
+	LoginDone    = "done"
+	LoginFailed  = "failed"
+	LoginExpired = "expired"
+)
+
+// LoginRequest lets an app on the user's computer (Roam, a CLI) sign in
+// through the browser: the app starts a request with its loopback address,
+// the user signs in, Gate sends the browser back to that address with a
+// one-time code, and the app collects the token with the code and its poll
+// secret. Someone who starts a request and tricks another person into
+// signing in never gets the code: it goes to that person's own computer.
+type LoginRequest struct {
+	ID        string
+	ReturnURL string
+	Expires   time.Time
+	State     string
+	Error     string
+}
+
+func (s *Store) CreateLoginRequest(ctx context.Context, id, pollSecret, returnURL string, ttl time.Duration) error {
 	now := time.Now()
-	_, err := s.db.ExecContext(ctx, `INSERT INTO login_requests (id, poll_hash, created, expires, state, token, error) VALUES (?, ?, ?, ?, 'pending', NULL, '')`,
-		id, secure.Hash(pollSecret), ms(now), ms(now.Add(ttl)))
+	_, err := s.db.ExecContext(ctx, `INSERT INTO login_requests (id, poll_hash, created, expires, state, token, error, return_url, code_hash) VALUES (?, ?, ?, ?, ?, NULL, '', ?, '')`,
+		id, secure.Hash(pollSecret), ms(now), ms(now.Add(ttl)), LoginPending, returnURL)
 	return err
 }
 
+// LoginRequest returns a pending, unexpired request.
 func (s *Store) LoginRequest(ctx context.Context, id string) (*LoginRequest, error) {
 	var r LoginRequest
 	var exp int64
-	err := s.db.QueryRowContext(ctx, `SELECT id, expires, state, error FROM login_requests WHERE id = ?`, id).Scan(&r.ID, &exp, &r.State, &r.Error)
+	err := s.db.QueryRowContext(ctx, `SELECT id, return_url, expires, state, error FROM login_requests WHERE id = ?`, id).Scan(&r.ID, &r.ReturnURL, &exp, &r.State, &r.Error)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
-	r.Expires = fromMs(exp)
-	return &r, err
-}
-
-// FinishLoginRequest stores the session token (encrypted) for the app to collect.
-func (s *Store) FinishLoginRequest(ctx context.Context, id, token, failure string) error {
-	state, sealed := "done", s.box.Seal([]byte(token))
-	if failure != "" {
-		state, sealed = "failed", nil
+	if err != nil {
+		return nil, err
 	}
-	return one(s.db.ExecContext(ctx, `UPDATE login_requests SET state = ?, token = ?, error = ? WHERE id = ? AND state = 'pending' AND expires > ?`,
-		state, sealed, failure, id, ms(time.Now())))
+	r.Expires = fromMs(exp)
+	if r.State != LoginPending || time.Now().After(r.Expires) {
+		return nil, ErrNotFound
+	}
+	return &r, nil
 }
 
-// CollectLogin returns the token once (then forgets it); "" while pending.
-func (s *Store) CollectLogin(ctx context.Context, id, pollSecret string) (token, state, failure string, err error) {
+// FinishLoginRequest stores the session token (encrypted) and returns the
+// one-time code the app needs to collect it; failure marks it failed.
+func (s *Store) FinishLoginRequest(ctx context.Context, id, token, failure string) (code string, err error) {
+	state, sealed, codeHash := LoginDone, s.box.Seal([]byte(token)), ""
+	if failure != "" {
+		state, sealed = LoginFailed, nil
+	} else {
+		code = secure.Token("")
+		codeHash = secure.Hash(code)
+	}
+	err = one(s.db.ExecContext(ctx, `UPDATE login_requests SET state = ?, token = ?, error = ?, code_hash = ? WHERE id = ? AND state = ? AND expires > ?`,
+		state, sealed, failure, codeHash, id, LoginPending, ms(time.Now())))
+	return code, err
+}
+
+// CollectLogin hands the token over once, to the holder of the poll secret
+// and the one-time code; state says where the request is otherwise.
+func (s *Store) CollectLogin(ctx context.Context, id, pollSecret, code string) (token, state, failure string, err error) {
 	var hash string
-	var sealed []byte
 	var exp int64
-	err = s.db.QueryRowContext(ctx, `SELECT poll_hash, token, state, error, expires FROM login_requests WHERE id = ?`, id).Scan(&hash, &sealed, &state, &failure, &exp)
+	err = s.db.QueryRowContext(ctx, `SELECT poll_hash, state, error, expires FROM login_requests WHERE id = ?`, id).Scan(&hash, &state, &failure, &exp)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && !secure.Equal(hash, secure.Hash(pollSecret))) {
 		return "", "", "", ErrNotFound
 	}
 	if err != nil {
 		return "", "", "", err
 	}
-	if state == "pending" && time.Now().After(fromMs(exp)) {
-		return "", "expired", "", nil
+	if state == LoginPending && time.Now().After(fromMs(exp)) {
+		return "", LoginExpired, "", nil
 	}
-	if state != "done" {
+	if state != LoginDone {
 		return "", state, failure, nil
+	}
+	// Deleting and reading in one statement hands the token out exactly once.
+	var sealed []byte
+	err = s.db.QueryRowContext(ctx, `DELETE FROM login_requests WHERE id = ? AND state = ? AND code_hash = ? RETURNING token`,
+		id, LoginDone, secure.Hash(code)).Scan(&sealed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", "", "", msg.New(msg.LoginCodeInvalid)
+	}
+	if err != nil {
+		return "", "", "", err
 	}
 	plain, err := s.box.Open(sealed)
 	if err != nil {
 		return "", "", "", err
 	}
-	_, err = s.db.ExecContext(ctx, `DELETE FROM login_requests WHERE id = ?`, id)
-	return string(plain), state, "", err
+	return string(plain), LoginDone, "", nil
 }
 
 // ----------------------------------------------------------------- bindings
@@ -524,6 +572,21 @@ const (
 	KindLogin   = "login"   // a sign-in, successful or not
 	KindSession = "session" // a session ended (logout, revoke, expiry)
 	KindAdmin   = "admin"   // a change to Gate's settings, users or bindings
+)
+
+// Verbs of events that aren't Kubernetes requests.
+const (
+	VerbLogin            = "login"
+	VerbLogout           = "logout"
+	ActionProviderCreate = "provider.create"
+	ActionProviderUpdate = "provider.update"
+	ActionProviderDelete = "provider.delete"
+	ActionUserEnable     = "user.enable"
+	ActionUserDisable    = "user.disable"
+	ActionBindingCreate  = "binding.create"
+	ActionBindingUpdate  = "binding.update"
+	ActionBindingDelete  = "binding.delete"
+	ActionSessionRevoke  = "session.revoke"
 )
 
 // Event is one line of the audit trail.
@@ -651,19 +714,29 @@ func (s *Store) Audit(ctx context.Context, q AuditQuery) ([]*Event, error) {
 	return out, rows.Err()
 }
 
+const pruneBatch = 5000
+
 // Prune drops audit events older than the retention, and sessions and login
 // requests that ended more than a day ago.
 func (s *Store) Prune(ctx context.Context, retention time.Duration) (int64, error) {
 	cutoff := ms(time.Now().Add(-retention))
-	r, err := s.db.ExecContext(ctx, `DELETE FROM audit WHERE ts < ?`, cutoff)
-	if err != nil {
-		return 0, err
+	// In batches: one huge DELETE would hold the write lock while new events wait.
+	var n int64
+	for {
+		r, err := s.db.ExecContext(ctx, `DELETE FROM audit WHERE id IN (SELECT id FROM audit WHERE ts < ? LIMIT ?)`, cutoff, pruneBatch)
+		if err != nil {
+			return n, err
+		}
+		k, _ := r.RowsAffected()
+		n += k
+		if k < pruneBatch {
+			break
+		}
 	}
-	n, _ := r.RowsAffected()
 	day := ms(time.Now().Add(-24 * time.Hour))
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE expires < ? OR (revoked = 1 AND last_used < ?)`, day, day); err != nil {
 		return n, err
 	}
-	_, err = s.db.ExecContext(ctx, `DELETE FROM login_requests WHERE expires < ?`, day)
+	_, err := s.db.ExecContext(ctx, `DELETE FROM login_requests WHERE expires < ?`, day)
 	return n, err
 }

@@ -3,13 +3,14 @@ package auth
 import (
 	"context"
 	"crypto/tls"
-	"errors"
-	"fmt"
+	"net"
 	"strings"
+	"time"
 
 	"github.com/go-ldap/ldap/v3"
 
 	"github.com/kuberoam/roam-gate/internal/identity"
+	"github.com/kuberoam/roam-gate/internal/msg"
 	"github.com/kuberoam/roam-gate/internal/store"
 )
 
@@ -40,7 +41,7 @@ type ldapProvider struct {
 
 func newLDAP(sp *store.Provider, c LDAPConfig) (*ldapProvider, error) {
 	if c.URL == "" || c.UserBaseDN == "" {
-		return nil, errors.New("url and userBaseDN are required")
+		return nil, msg.New(msg.ProviderRequired, "fields", "url, userBaseDN")
 	}
 	def := func(p *string, v string) {
 		if *p == "" {
@@ -60,10 +61,11 @@ func (l *ldapProvider) Info() *store.Provider { return l.info }
 
 func (l *ldapProvider) dial() (*ldap.Conn, error) {
 	tlsCfg := &tls.Config{InsecureSkipVerify: l.cfg.InsecureSkipVerify} //nolint:gosec // opt-in for lab directories
-	conn, err := ldap.DialURL(l.cfg.URL, ldap.DialWithTLSConfig(tlsCfg))
+	conn, err := ldap.DialURL(l.cfg.URL, ldap.DialWithTLSConfig(tlsCfg), ldap.DialWithDialer(&net.Dialer{Timeout: ldapTimeout}))
 	if err != nil {
 		return nil, err
 	}
+	conn.SetTimeout(ldapTimeout) // a hung directory must not hold sign-in pages open
 	if l.cfg.StartTLS {
 		if err := conn.StartTLS(tlsCfg); err != nil {
 			conn.Close()
@@ -73,7 +75,9 @@ func (l *ldapProvider) dial() (*ldap.Conn, error) {
 	return conn, nil
 }
 
-var errBadCredentials = errors.New("wrong username or password")
+const ldapTimeout = 10 * time.Second
+
+var errBadCredentials = msg.New(msg.BadCredentials)
 
 func (l *ldapProvider) Login(ctx context.Context, username, password string) (*identity.Identity, error) {
 	username = strings.TrimSpace(username)
@@ -82,19 +86,19 @@ func (l *ldapProvider) Login(ctx context.Context, username, password string) (*i
 	}
 	conn, err := l.dial()
 	if err != nil {
-		return nil, fmt.Errorf("connecting to LDAP: %w", err)
+		return nil, msg.Wrap(msg.LDAPConnect, err)
 	}
 	defer conn.Close()
 	if l.cfg.BindDN != "" {
 		if err := conn.Bind(l.cfg.BindDN, l.cfg.BindPassword); err != nil {
-			return nil, fmt.Errorf("LDAP service account: %w", err)
+			return nil, msg.Wrap(msg.LDAPServiceAccount, err)
 		}
 	}
 	filter := strings.ReplaceAll(l.cfg.UserFilter, "{username}", ldap.EscapeFilter(username))
 	res, err := conn.Search(ldap.NewSearchRequest(l.cfg.UserBaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 2, 10, false,
 		filter, []string{l.cfg.UsernameAttr, l.cfg.EmailAttr, l.cfg.NameAttr}, nil))
 	if err != nil {
-		return nil, fmt.Errorf("LDAP user search: %w", err)
+		return nil, msg.Wrap(msg.LDAPSearch, err)
 	}
 	if len(res.Entries) != 1 {
 		return nil, errBadCredentials
@@ -112,14 +116,14 @@ func (l *ldapProvider) Login(ctx context.Context, username, password string) (*i
 		// Search groups as the service account again (users often can't).
 		if l.cfg.BindDN != "" {
 			if err := conn.Bind(l.cfg.BindDN, l.cfg.BindPassword); err != nil {
-				return nil, fmt.Errorf("LDAP service account: %w", err)
+				return nil, msg.Wrap(msg.LDAPServiceAccount, err)
 			}
 		}
 		gf := strings.NewReplacer("{dn}", ldap.EscapeFilter(entry.DN), "{username}", ldap.EscapeFilter(id.Login)).Replace(l.cfg.GroupFilter)
 		gres, err := conn.Search(ldap.NewSearchRequest(l.cfg.GroupBaseDN, ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 1000, 10, false,
 			gf, []string{l.cfg.GroupNameAttr}, nil))
 		if err != nil {
-			return nil, fmt.Errorf("LDAP group search: %w", err)
+			return nil, msg.Wrap(msg.LDAPSearch, err)
 		}
 		for _, g := range gres.Entries {
 			if n := g.GetAttributeValue(l.cfg.GroupNameAttr); n != "" {

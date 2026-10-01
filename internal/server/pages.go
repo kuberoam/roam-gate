@@ -6,13 +6,15 @@ import (
 	"html/template"
 	"net/http"
 	"time"
+
+	"github.com/kuberoam/roam-gate/internal/msg"
 )
 
 // The only pages Gate serves: sign-in and its outcome. Everything else is
 // managed from Roam through the API. No JavaScript, no external assets.
 
 var pageTmpl = template.Must(template.New("page").Parse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="{{.Lang}}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{{.Title}} · Roam Gate</title>
 <style>
 :root{color-scheme:light dark;--bg:#0f172a;--card:#1e293b;--line:#334155;--text:#f8fafc;--muted:#94a3b8;--accent:#22c55e;--red:#f87171}
@@ -29,12 +31,17 @@ details{margin-top:14px}summary{cursor:pointer;color:var(--muted)}pre{white-spac
 .err{color:var(--red)}.small{font-size:13px;color:var(--muted);margin-top:14px}
 </style></head><body><main class="card"><div class="brand"><span class="dot"></span>Roam Gate</div>{{.Body}}</main></body></html>`))
 
-func (s *Server) page(w http.ResponseWriter, code int, title string, body template.HTML) {
+// view renders pages in one language.
+type view struct{ lang string }
+
+func viewFor(r *http.Request) view { return view{msg.Lang(r)} }
+
+// T is the template helper: {{call $.T "page.signInWith" "provider" .Name}}.
+func (v view) T(code string, kv ...string) string { return msg.T(v.lang, msg.Code(code), kv...) }
+
+func (s *Server) page(w http.ResponseWriter, v view, code int, title msg.Code, body template.HTML) {
 	var buf bytes.Buffer
-	if err := pageTmpl.Execute(&buf, struct {
-		Title string
-		Body  template.HTML
-	}{title, body}); err != nil {
+	if err := pageTmpl.Execute(&buf, map[string]any{"Lang": v.lang, "Title": v.T(string(title)), "Body": body}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -52,37 +59,36 @@ func render(t *template.Template, data any) template.HTML {
 	return template.HTML(buf.String()) //nolint:gosec // produced by html/template
 }
 
-var loginTmpl = template.Must(template.New("login").Parse(`<h1>Sign in</h1>
-<p>Use your organization account to get access to this cluster.</p>
-{{if not .Providers}}<p class="err">No sign-in method is set up yet. Ask your administrator to add one in Roam.</p>{{end}}
+var loginTmpl = template.Must(template.New("login").Parse(`<h1>{{call .T "page.titleSignIn"}}</h1>
+<p>{{call .T "page.signInIntro"}}</p>
+{{if .Req}}<p class="small">{{call .T "page.appRequest"}}</p>{{end}}
+{{if not .Providers}}<p class="err">{{call .T "page.noProviders"}}</p>{{end}}
 {{range .Providers}}{{if .Password}}
 <form method="post" action="/auth/{{.ID}}/login">
 <input type="hidden" name="t" value="{{$.Token}}"><input type="hidden" name="req" value="{{$.Req}}">
-<label>{{.Name}} username<input name="username" autocomplete="username" required></label>
-<label>Password<input name="password" type="password" autocomplete="current-password" required></label>
-<button class="primary" type="submit">Sign in with {{.Name}}</button></form>
-{{else}}<a class="btn" href="/auth/{{.ID}}/start?req={{$.Req}}">Continue with {{.Name}}</a>{{end}}{{end}}`))
+<label>{{call $.T "page.username" "provider" .Name}}<input name="username" autocomplete="username" required></label>
+<label>{{call $.T "page.password"}}<input name="password" type="password" autocomplete="current-password" required></label>
+<button class="primary" type="submit">{{call $.T "page.signInWith" "provider" .Name}}</button></form>
+{{else}}<a class="btn" href="/auth/{{.ID}}/start?req={{$.Req}}">{{call $.T "page.continueWith" "provider" .Name}}</a>{{end}}{{end}}`))
 
-func loginBody(ps []providerView, req, token string) template.HTML {
-	return render(loginTmpl, map[string]any{"Providers": ps, "Req": req, "Token": token})
+func loginBody(v view, ps []providerView, req, token string) template.HTML {
+	return render(loginTmpl, map[string]any{"T": v.T, "Providers": ps, "Req": req, "Token": token})
 }
 
-var errorTmpl = template.Must(template.New("error").Parse(`<h1>Something went wrong</h1><p class="err">{{.}}</p><a class="btn" href="/login">Back to sign-in</a>`))
+var errorTmpl = template.Must(template.New("error").Parse(`<h1>{{call .T "page.errorHeading"}}</h1><p class="err">{{.Message}}</p><a class="btn" href="/login">{{call .T "page.back"}}</a>`))
 
-func errorBody(msg string) template.HTML { return render(errorTmpl, msg) }
+// errorBody shows err in the page's language.
+func errorBody(v view, err error) template.HTML {
+	return render(errorTmpl, map[string]any{"T": v.T, "Message": msg.Localize(v.lang, err)})
+}
 
-var doneTmpl = template.Must(template.New("done").Parse(`<h1>You're signed in</h1>
-<p>Signed in as <b>{{.}}</b>. You can close this tab and go back to Roam.</p>`))
+var kubeconfigTmpl = template.Must(template.New("kubeconfig").Parse(`<h1>{{call .T "page.signedInHeading"}}</h1>
+<p>{{call .T "page.signedInAs" "user" .User}} {{call .T "page.accessUntil" "expires" .Expires}}</p>
+<a class="btn primary" download="kubeconfig-roam-gate.yaml" href="{{.Href}}">{{call .T "page.download"}}</a>
+<details><summary>{{call .T "page.showKubeconfig"}}</summary><pre>{{.YAML}}</pre></details>
+<p class="small">{{call .T "page.kubeconfigHint"}}</p>`))
 
-func doneBody(user string) template.HTML { return render(doneTmpl, user) }
-
-var kubeconfigTmpl = template.Must(template.New("kubeconfig").Parse(`<h1>You're signed in</h1>
-<p>Signed in as <b>{{.User}}</b>. Your access lasts until {{.Expires}}.</p>
-<a class="btn primary" download="kubeconfig-roam-gate.yaml" href="{{.Href}}">Download kubeconfig</a>
-<details><summary>Show kubeconfig</summary><pre>{{.YAML}}</pre></details>
-<p class="small">Use it with <code>kubectl --kubeconfig kubeconfig-roam-gate.yaml get pods</code>, or open this cluster in Roam. Keep the file private: it works as your password until it expires.</p>`))
-
-func kubeconfigBody(user string, expires time.Time, yaml string) template.HTML {
+func kubeconfigBody(v view, user string, expires time.Time, yaml string) template.HTML {
 	href := template.URL("data:application/yaml;base64," + base64.StdEncoding.EncodeToString([]byte(yaml))) //nolint:gosec // our own content
-	return render(kubeconfigTmpl, map[string]any{"User": user, "Expires": expires.UTC().Format("2006-01-02 15:04 UTC"), "YAML": yaml, "Href": href})
+	return render(kubeconfigTmpl, map[string]any{"T": v.T, "User": user, "Expires": expires.UTC().Format("2006-01-02 15:04 UTC"), "YAML": yaml, "Href": href})
 }

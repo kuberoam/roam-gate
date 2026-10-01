@@ -2,8 +2,6 @@ package policy
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"regexp"
 	"slices"
 	"strings"
@@ -13,6 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 
+	"github.com/kuberoam/roam-gate/internal/msg"
 	"github.com/kuberoam/roam-gate/internal/store"
 )
 
@@ -41,7 +40,7 @@ var arnRe = regexp.MustCompile(`^arn:aws[a-z-]*:iam::\d{12}:(role|user)/(.+)$`)
 func parseARN(arn string) (kind, normalized string, err error) {
 	m := arnRe.FindStringSubmatch(strings.TrimSpace(arn))
 	if m == nil {
-		return "", "", errors.New("expected an IAM role or user ARN, like arn:aws:iam::123456789012:role/Developers")
+		return "", "", msg.New(msg.ARNInvalid)
 	}
 	if m[1] == "role" {
 		name := m[2][strings.LastIndexByte(m[2], '/')+1:]
@@ -68,7 +67,7 @@ func (r *Reconciler) reconcileAWSAuth(ctx context.Context, bindings []*store.Bin
 	cm, err := cms.Get(ctx, awsAuthName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		for _, b := range aws {
-			note(b.ID, "", errors.New("this cluster has no aws-auth ConfigMap (not EKS, or it uses access entries only — add the access entry from Roam)"))
+			note(b.ID, "", msg.New(msg.AWSAuthMissing))
 		}
 		return nil
 	}
@@ -78,10 +77,10 @@ func (r *Reconciler) reconcileAWSAuth(ctx context.Context, bindings []*store.Bin
 	}
 	if err != nil {
 		if apierrors.IsForbidden(err) {
-			err = errors.New("Gate may not edit aws-auth: install the chart with eks.awsAuth=true")
+			err = msg.New(msg.AWSAuthForbidden)
 		}
 		for _, b := range aws {
-			note(b.ID, "", fmt.Errorf("reading aws-auth: %w", err))
+			note(b.ID, "", msg.Wrap(msg.AWSAuthRead, err))
 		}
 		return err
 	}
@@ -91,7 +90,7 @@ func (r *Reconciler) reconcileAWSAuth(ctx context.Context, bindings []*store.Bin
 		parseErr = yaml.Unmarshal([]byte(cm.Data["mapUsers"]), &users)
 	}
 	if parseErr != nil {
-		err := fmt.Errorf("aws-auth is not valid YAML, so Gate leaves it alone: %w", parseErr)
+		err := msg.Wrap(msg.AWSAuthInvalid, parseErr)
 		for _, b := range aws {
 			note(b.ID, "", err)
 		}
@@ -127,7 +126,7 @@ func (r *Reconciler) reconcileAWSAuth(ctx context.Context, bindings []*store.Bin
 	}
 	if _, err := cms.Update(ctx, cm, metav1.UpdateOptions{}); err != nil {
 		for _, b := range aws {
-			note(b.ID, "", fmt.Errorf("updating aws-auth: %w", err))
+			note(b.ID, "", msg.Wrap(msg.AWSAuthUpdate, err))
 		}
 		return err
 	}

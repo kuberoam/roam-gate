@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/kuberoam/roam-gate/internal/auth"
 	"github.com/kuberoam/roam-gate/internal/identity"
+	"github.com/kuberoam/roam-gate/internal/msg"
 	"github.com/kuberoam/roam-gate/internal/proxy"
 	"github.com/kuberoam/roam-gate/internal/secure"
 	"github.com/kuberoam/roam-gate/internal/store"
@@ -51,11 +51,11 @@ func (s *Server) setFlow(w http.ResponseWriter, f flow) {
 func (s *Server) readFlow(r *http.Request) (*flow, error) {
 	c, err := r.Cookie(flowCookie)
 	if err != nil {
-		return nil, errors.New("the sign-in expired or was started in another browser; start again")
+		return nil, msg.New(msg.FlowMissing)
 	}
 	v, ok := s.signer.Verify(c.Value)
 	if !ok {
-		return nil, errors.New("the sign-in state was altered")
+		return nil, msg.New(msg.FlowAltered)
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(v)
 	if err != nil {
@@ -66,7 +66,7 @@ func (s *Server) readFlow(r *http.Request) (*flow, error) {
 		return nil, err
 	}
 	if time.Now().Unix() > f.Expires {
-		return nil, errors.New("the sign-in took too long; start again")
+		return nil, msg.New(msg.FlowExpired)
 	}
 	return &f, nil
 }
@@ -98,29 +98,42 @@ func (s *Server) enabledProviders(ctx context.Context) ([]providerView, error) {
 }
 
 func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
+	v := viewFor(r)
 	ps, err := s.enabledProviders(r.Context())
 	if err != nil {
-		s.page(w, http.StatusInternalServerError, "Roam Gate", errorBody(err.Error()))
+		s.page(w, v, http.StatusInternalServerError, msg.PageTitleError, errorBody(v, err))
 		return
 	}
-	req := r.URL.Query().Get("req")
-	s.page(w, http.StatusOK, "Sign in", loginBody(ps, req, s.signer.Sign(strconv.FormatInt(time.Now().Unix(), 10))))
+	s.page(w, v, http.StatusOK, msg.PageTitleSignIn, loginBody(v, ps, s.pendingRequest(r, r.URL.Query().Get("req")), s.signer.Sign(strconv.FormatInt(time.Now().Unix(), 10))))
+}
+
+// pendingRequest keeps an app login request ID only while it is pending.
+func (s *Server) pendingRequest(r *http.Request, id string) string {
+	if id == "" {
+		return ""
+	}
+	if _, err := s.st.LoginRequest(r.Context(), id); err != nil {
+		return ""
+	}
+	return id
 }
 
 func (s *Server) authStart(w http.ResponseWriter, r *http.Request) {
+	v := viewFor(r)
 	id := r.PathValue("provider")
+	req := s.pendingRequest(r, r.URL.Query().Get("req"))
 	p, err := s.registry.Get(r.Context(), id)
 	if err != nil {
-		s.page(w, http.StatusBadRequest, "Sign-in unavailable", errorBody("This sign-in method is not available: "+err.Error()))
+		s.page(w, v, http.StatusBadRequest, msg.PageTitleUnavailable, errorBody(v, msg.Wrap(msg.ProviderUnavailable, err)))
 		return
 	}
 	rd, ok := p.(auth.Redirector)
 	if !ok {
-		http.Redirect(w, r, "/login?req="+url.QueryEscape(r.URL.Query().Get("req")), http.StatusFound)
+		http.Redirect(w, r, "/login?req="+url.QueryEscape(req), http.StatusFound)
 		return
 	}
 	f := flow{State: secure.ID(), Nonce: secure.ID(), Verifier: oauth2.GenerateVerifier(), Provider: id,
-		Request: r.URL.Query().Get("req"), Expires: time.Now().Add(flowTTL).Unix()}
+		Request: req, Expires: time.Now().Add(flowTTL).Unix()}
 	s.setFlow(w, f)
 	http.Redirect(w, r, rd.AuthURL(f.State, f.Nonce, f.Verifier), http.StatusFound)
 }
@@ -130,7 +143,7 @@ func (s *Server) authCallback(w http.ResponseWriter, r *http.Request) {
 	f, err := s.readFlow(r)
 	clearFlow(w)
 	if err == nil && (f.Provider != id || !secure.Equal(f.State, r.URL.Query().Get("state"))) {
-		err = errors.New("the sign-in state does not match; start again")
+		err = msg.New(msg.FlowMismatch)
 	}
 	var ident *identity.Identity
 	if err == nil {
@@ -138,7 +151,7 @@ func (s *Server) authCallback(w http.ResponseWriter, r *http.Request) {
 		if p, err = s.registry.Get(r.Context(), id); err == nil {
 			rd, ok := p.(auth.Redirector)
 			if !ok {
-				err = errors.New("this provider does not use redirects")
+				err = msg.New(msg.NotRedirect)
 			} else {
 				ident, err = rd.Finish(r.Context(), r, f.Nonce, f.Verifier)
 			}
@@ -152,17 +165,18 @@ func (s *Server) authCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) passwordLogin(w http.ResponseWriter, r *http.Request) {
+	v := viewFor(r)
 	id := r.PathValue("provider")
 	ip := proxy.ClientIP(r)
 	if !s.limiter.allow(ip) {
-		s.page(w, http.StatusTooManyRequests, "Too many attempts", errorBody("Too many sign-in attempts; wait a minute and try again."))
+		s.page(w, v, http.StatusTooManyRequests, msg.PageTitleTooMany, errorBody(v, msg.New(msg.TooManyAttempts)))
 		return
 	}
 	// The form carries a signed timestamp: posts from elsewhere or stale pages fail.
 	ts, ok := s.signer.Verify(r.PostFormValue("t"))
 	n, _ := strconv.ParseInt(ts, 10, 64)
 	if !ok || time.Since(time.Unix(n, 0)) > flowTTL {
-		s.page(w, http.StatusBadRequest, "Sign in", errorBody("The form expired; go back and try again."))
+		s.page(w, v, http.StatusBadRequest, msg.PageTitleSignIn, errorBody(v, msg.New(msg.FormExpired)))
 		return
 	}
 	var ident *identity.Identity
@@ -170,20 +184,19 @@ func (s *Server) passwordLogin(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		pl, ok := p.(auth.PasswordLogin)
 		if !ok {
-			err = errors.New("this provider does not sign in with a password")
+			err = msg.New(msg.NotPassword)
 		} else {
 			ident, err = pl.Login(r.Context(), r.PostFormValue("username"), r.PostFormValue("password"))
 		}
 	}
 	if err != nil {
 		// Name the attempted user in the audit trail even though sign-in failed.
-		ident = nil
 		s.rec.Record(&store.Event{Kind: store.KindLogin, User: id + ":" + strings.ToLower(strings.TrimSpace(r.PostFormValue("username"))),
-			Verb: "login", Allowed: false, IP: ip, UA: r.UserAgent(), Detail: detail(map[string]any{"provider": id, "error": err.Error()})})
-		s.page(w, http.StatusUnauthorized, "Sign-in failed", errorBody(err.Error()))
+			Verb: store.VerbLogin, Allowed: false, IP: ip, UA: r.UserAgent(), Detail: detail(map[string]any{"provider": id, "error": msg.Localize(msg.DefaultLang, err)})})
+		s.page(w, v, http.StatusUnauthorized, msg.PageTitleFailed, errorBody(v, err))
 		return
 	}
-	s.completeLogin(w, r, id, r.PostFormValue("req"), ident, nil)
+	s.completeLogin(w, r, id, s.pendingRequest(r, r.PostFormValue("req")), ident, nil)
 }
 
 func detail(v any) string {
@@ -191,50 +204,88 @@ func detail(v any) string {
 	return string(b)
 }
 
-// completeLogin records the outcome, starts the session, and either hands the
-// token to the waiting app or shows the kubeconfig.
+// completeLogin records the outcome, starts the session, and either sends
+// the browser back to the waiting app or shows the kubeconfig.
 func (s *Server) completeLogin(w http.ResponseWriter, r *http.Request, providerID, req string, ident *identity.Identity, err error) {
+	v := viewFor(r)
 	ip := proxy.ClientIP(r)
+	var lr *store.LoginRequest
+	if req != "" {
+		lr, _ = s.st.LoginRequest(r.Context(), req)
+	}
 	var token string
 	var sess *store.Session
 	if err == nil {
 		token, sess, err = s.sessions.Start(r.Context(), ident, ip, r.UserAgent())
 	}
 	if err != nil {
-		e := &store.Event{Kind: store.KindLogin, Verb: "login", Allowed: false, IP: ip, UA: r.UserAgent(),
-			Detail: detail(map[string]any{"provider": providerID, "error": err.Error()})}
+		e := &store.Event{Kind: store.KindLogin, Verb: store.VerbLogin, Allowed: false, IP: ip, UA: r.UserAgent(),
+			Detail: detail(map[string]any{"provider": providerID, "error": msg.Localize(msg.DefaultLang, err)})}
 		if ident != nil {
 			e.User = ident.UserID()
 		}
 		s.rec.Record(e)
-		if req != "" {
-			_ = s.st.FinishLoginRequest(r.Context(), req, "", err.Error())
+		if lr != nil {
+			// The app learns it failed from collect; the person reads why here.
+			_, _ = s.st.FinishLoginRequest(r.Context(), lr.ID, "", msg.Localize(v.lang, err))
 		}
-		s.page(w, http.StatusUnauthorized, "Sign-in failed", errorBody(err.Error()))
+		s.page(w, v, http.StatusUnauthorized, msg.PageTitleFailed, errorBody(v, err))
 		return
 	}
-	s.rec.Record(&store.Event{Kind: store.KindLogin, User: sess.User, Groups: sess.Groups, Session: sess.ID, Verb: "login", Allowed: true,
-		IP: ip, UA: r.UserAgent(), Detail: detail(map[string]any{"provider": providerID, "expires": sess.Expires})})
-	if req != "" {
-		if err := s.st.FinishLoginRequest(r.Context(), req, token, ""); err == nil {
-			s.page(w, http.StatusOK, "Signed in", doneBody(sess.User))
+	s.rec.Record(&store.Event{Kind: store.KindLogin, User: sess.User, Groups: sess.Groups, Session: sess.ID, Verb: store.VerbLogin, Allowed: true,
+		IP: ip, UA: r.UserAgent(), Detail: detail(map[string]any{"provider": providerID, "expires": sess.Expires, "app": lr != nil})})
+	if lr != nil {
+		if code, err := s.st.FinishLoginRequest(r.Context(), lr.ID, token, ""); err == nil {
+			http.Redirect(w, r, returnTo(lr, "code", code), http.StatusFound)
 			return
 		}
 		// The app stopped waiting; fall back to showing the kubeconfig.
 	}
-	s.page(w, http.StatusOK, "Signed in", kubeconfigBody(sess.User, sess.Expires, s.kubeconfigYAML(sess, token)))
+	s.page(w, v, http.StatusOK, msg.PageTitleSignedIn, kubeconfigBody(v, sess.User, sess.Expires, s.kubeconfigYAML(sess, token)))
+}
+
+// returnTo is the app's loopback address with the request ID and the one-time code.
+func returnTo(lr *store.LoginRequest, key, value string) string {
+	u, _ := url.Parse(lr.ReturnURL)
+	q := u.Query()
+	q.Set("req", lr.ID)
+	q.Set(key, value)
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // ------------------------------------------------------ app login requests
 
+// loopbackURL accepts only http://127.0.0.1, [::1] or localhost with a port:
+// the app's own listener on the computer where the person signs in (RFC 8252).
+func loopbackURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "http" || u.User != nil || u.Port() == "" || u.Fragment != "" {
+		return false
+	}
+	h := u.Hostname()
+	return h == "localhost" || h == "127.0.0.1" || h == "::1"
+}
+
 func (s *Server) startLoginRequest(w http.ResponseWriter, r *http.Request) {
 	if !s.limiter.allow("lr:" + proxy.ClientIP(r)) {
-		fail(w, http.StatusTooManyRequests, "too many sign-in requests")
+		fail(w, r, http.StatusTooManyRequests, msg.New(msg.TooManyRequests))
+		return
+	}
+	var body struct {
+		ReturnURL string `json:"returnURL"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		badRequest(w, r, err)
+		return
+	}
+	if !loopbackURL(body.ReturnURL) {
+		fail(w, r, http.StatusBadRequest, msg.New(msg.ReturnURLInvalid))
 		return
 	}
 	id, secret := secure.ID(), secure.Token("rgp_")
-	if err := s.st.CreateLoginRequest(r.Context(), id, secret, loginRequestTTL); err != nil {
-		failErr(w, err)
+	if err := s.st.CreateLoginRequest(r.Context(), id, secret, body.ReturnURL, loginRequestTTL); err != nil {
+		fail(w, r, 0, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
@@ -246,14 +297,15 @@ func (s *Server) startLoginRequest(w http.ResponseWriter, r *http.Request) {
 func (s *Server) collectLoginRequest(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		PollSecret string `json:"pollSecret"`
+		Code       string `json:"code"`
 	}
 	if err := readJSON(r, &body); err != nil {
-		fail(w, http.StatusBadRequest, err.Error())
+		badRequest(w, r, err)
 		return
 	}
-	token, state, failure, err := s.st.CollectLogin(r.Context(), r.PathValue("id"), body.PollSecret)
+	token, state, failure, err := s.st.CollectLogin(r.Context(), r.PathValue("id"), body.PollSecret, body.Code)
 	if err != nil {
-		failErr(w, err)
+		fail(w, r, 0, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"state": state, "token": token, "error": failure})

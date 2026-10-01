@@ -19,11 +19,12 @@ import (
 )
 
 type Recorder struct {
-	st    *store.Store
-	out   io.Writer
-	queue chan *store.Event
-	mu    sync.Mutex // serialises stdout lines
-	done  chan struct{}
+	st     *store.Store
+	out    io.Writer
+	queue  chan *store.Event
+	mu     sync.Mutex // serialises stdout lines; guards closed
+	closed bool
+	done   chan struct{}
 }
 
 // New starts the background writer; out receives one JSON line per event (nil to skip).
@@ -38,17 +39,25 @@ func (r *Recorder) Record(e *store.Event) {
 	if e.Time.IsZero() {
 		e.Time = time.Now()
 	}
+	r.mu.Lock()
 	if r.out != nil {
 		line, _ := json.Marshal(struct {
 			Audit *store.Event `json:"audit"`
 		}{e})
-		r.mu.Lock()
 		r.out.Write(append(line, '\n'))
-		r.mu.Unlock()
 	}
-	select {
-	case r.queue <- e:
-	default:
+	// After Close (shutdown), sessions that outlive the server — exec,
+	// port-forward — still end and are written directly.
+	queued := false
+	if !r.closed {
+		select {
+		case r.queue <- e:
+			queued = true
+		default:
+		}
+	}
+	r.mu.Unlock()
+	if !queued {
 		if err := r.write([]*store.Event{e}); err != nil {
 			slog.Error("audit write failed", "err", err)
 		}
@@ -94,6 +103,13 @@ func (r *Recorder) loop() {
 
 // Close writes what is queued; call on shutdown.
 func (r *Recorder) Close() {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return
+	}
+	r.closed = true
 	close(r.queue)
+	r.mu.Unlock()
 	<-r.done
 }

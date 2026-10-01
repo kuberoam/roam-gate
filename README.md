@@ -105,13 +105,20 @@ On EKS clusters that use access entries instead of `aws-auth`, Roam adds the acc
 
 ## Signing in from apps and the CLI
 
+Apps sign in through the browser and get the token back on their own computer (RFC 8252 loopback):
+
 ```sh
-curl -X POST https://gate.example.com/api/v1/login-requests
+# 1. The app listens on a loopback port and starts a request with that address.
+curl -X POST https://gate.example.com/api/v1/login-requests -d '{"returnURL":"http://127.0.0.1:53682/callback"}'
 # → {"id": "…", "pollSecret": "…", "url": "https://gate.example.com/login?req=…"}
-# open url in a browser, then poll:
-curl -X POST https://gate.example.com/api/v1/login-requests/<id>/collect -d '{"pollSecret":"…"}'
-# → {"state": "done", "token": "rg_…"}
+# 2. It opens url in the browser. After sign-in the browser comes back to
+#    http://127.0.0.1:53682/callback?req=…&code=…
+# 3. It collects the token with its poll secret and that one-time code:
+curl -X POST https://gate.example.com/api/v1/login-requests/<id>/collect -d '{"pollSecret":"…","code":"…"}'
+# → {"state": "done", "token": "rg_…"}   (state is "pending", "failed" or "expired" otherwise)
 ```
+
+The code only ever reaches the computer where the person signs in, so sending someone a sign-in link can't hand their session to whoever started the request.
 
 Or open `https://<gate>/login` in a browser and download a ready-made kubeconfig.
 
@@ -129,6 +136,10 @@ All endpoints take `Authorization: Bearer <token>` (or `X-Roam-Gate-Token: <toke
 | `GET /api/v1/sessions` · `DELETE /api/v1/sessions/{id}` | Active sessions |
 | `GET /api/v1/audit?user=&kind=&verb=&namespace=&resource=&q=&denied=true&since=&until=&before=&limit=` | Audit trail |
 | `GET /api/v1/cluster/roles` · `GET /api/v1/cluster/namespaces` · `GET /api/v1/status` | Cluster info, reconcile status |
+
+Errors are `{"error": "<message>", "code": "<stable code>"}`. Messages — API errors, binding statuses and the sign-in pages — follow `Accept-Language` (English and Vietnamese so far; see `internal/msg` to add one).
+
+Deleting or turning off a sign-in method ends the sessions it started. Disabling a user ends theirs.
 
 Audit events are also written to stdout as JSON lines (`{"audit": …}`), so your log pipeline can keep them longer.
 

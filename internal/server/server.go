@@ -15,6 +15,7 @@ import (
 	"github.com/kuberoam/roam-gate/internal/auth"
 	"github.com/kuberoam/roam-gate/internal/config"
 	"github.com/kuberoam/roam-gate/internal/kube"
+	"github.com/kuberoam/roam-gate/internal/msg"
 	"github.com/kuberoam/roam-gate/internal/policy"
 	"github.com/kuberoam/roam-gate/internal/proxy"
 	"github.com/kuberoam/roam-gate/internal/secure"
@@ -55,7 +56,7 @@ func New(d Deps) *Server {
 		signer: secure.NewSigner(d.Config.SecretKey), caPEM: d.CAPEM, limiter: newRateLimiter(10, time.Minute),
 		mux: http.NewServeMux(),
 	}
-	s.registry = auth.NewRegistry(d.Store, func(id string) string { return d.Config.ExternalURL + "/auth/" + id + "/callback" })
+	s.registry = auth.NewRegistry(d.Store, s.callbackURL)
 	m := s.mux
 
 	m.Handle(proxy.Prefix+"/", d.Proxy)
@@ -115,7 +116,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
-	if _, err := s.st.Bindings(ctx); err != nil {
+	if err := s.st.Ping(ctx); err != nil {
 		http.Error(w, "database: "+err.Error(), http.StatusServiceUnavailable)
 		return
 	}
@@ -124,8 +125,16 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 
 // ------------------------------------------------------------------ helpers
 
+// callbackURL is where a provider sends the browser back after sign-in.
+func (s *Server) callbackURL(providerID string) string {
+	return s.cfg.ExternalURL + "/auth/" + providerID + "/callback"
+}
+
+// apiError is how the API reports a failure: a stable code for programs and
+// the message in the caller's language (Accept-Language) for people.
 type apiError struct {
-	Error string `json:"error"`
+	Error string   `json:"error"`
+	Code  msg.Code `json:"code,omitempty"`
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -134,16 +143,23 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-func fail(w http.ResponseWriter, code int, msg string) { writeJSON(w, code, apiError{msg}) }
-
-func failErr(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, store.ErrNotFound):
-		fail(w, http.StatusNotFound, "not found")
-	default:
-		slog.Error("request failed", "err", err)
-		fail(w, http.StatusInternalServerError, err.Error())
+// fail answers with an error; status 0 picks one from the error.
+func fail(w http.ResponseWriter, r *http.Request, status int, err error) {
+	if status == 0 {
+		status = http.StatusBadRequest
+		if errors.Is(err, store.ErrNotFound) {
+			status, err = http.StatusNotFound, msg.New(msg.NotFound)
+		} else if msg.CodeOf(err) == "" {
+			slog.Error("request failed", "path", r.URL.Path, "err", err)
+			status, err = http.StatusInternalServerError, msg.Wrap(msg.Internal, err)
+		}
 	}
+	writeJSON(w, status, apiError{Error: msg.Localize(msg.Lang(r), err), Code: msg.CodeOf(err)})
+}
+
+// badRequest reports input the API couldn't decode.
+func badRequest(w http.ResponseWriter, r *http.Request, err error) {
+	fail(w, r, http.StatusBadRequest, msg.Wrap(msg.BadRequest, err))
 }
 
 func readJSON(r *http.Request, v any) error {
@@ -158,7 +174,7 @@ func (s *Server) user(h handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, err := s.sessions.Principal(r)
 		if err != nil {
-			fail(w, http.StatusUnauthorized, "sign in to Roam Gate first")
+			fail(w, r, http.StatusUnauthorized, msg.New(msg.NotSignedIn))
 			return
 		}
 		h(w, r, p)
@@ -168,7 +184,7 @@ func (s *Server) user(h handler) http.HandlerFunc {
 func (s *Server) admin(h handler) http.HandlerFunc {
 	return s.user(func(w http.ResponseWriter, r *http.Request, p *auth.Principal) {
 		if !p.Admin {
-			fail(w, http.StatusForbidden, "only Roam Gate admins can do this")
+			fail(w, r, http.StatusForbidden, msg.New(msg.AdminOnly))
 			return
 		}
 		h(w, r, p)

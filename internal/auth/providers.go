@@ -4,8 +4,6 @@ package auth
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -13,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kuberoam/roam-gate/internal/identity"
+	"github.com/kuberoam/roam-gate/internal/msg"
 	"github.com/kuberoam/roam-gate/internal/store"
 )
 
@@ -59,13 +58,13 @@ func (r Restrictions) Check(id *identity.Identity) error {
 	if len(r.AllowedDomains) > 0 {
 		at := strings.LastIndexByte(id.Email, '@')
 		if at < 0 || !slices.ContainsFunc(r.AllowedDomains, func(d string) bool { return strings.EqualFold(d, id.Email[at+1:]) }) {
-			return errors.New("your email domain is not allowed to sign in")
+			return msg.New(msg.DomainDenied)
 		}
 	}
 	if len(r.AllowedGroups) > 0 && !slices.ContainsFunc(id.Groups, func(g string) bool {
 		return slices.ContainsFunc(r.AllowedGroups, func(a string) bool { return strings.EqualFold(a, g) })
 	}) {
-		return errors.New("you are not in a group that is allowed to sign in")
+		return msg.New(msg.GroupDenied)
 	}
 	return nil
 }
@@ -88,7 +87,7 @@ func NewRegistry(st *store.Store, callbackURL func(string) string) *Registry {
 	return &Registry{st: st, callbackURL: callbackURL, cache: map[string]cached{}}
 }
 
-var ErrProviderDisabled = errors.New("this sign-in method is turned off")
+var ErrProviderDisabled = msg.New(msg.ProviderOff)
 
 // Get returns an enabled provider.
 func (r *Registry) Get(ctx context.Context, id string) (Provider, error) {
@@ -119,7 +118,7 @@ func (r *Registry) Get(ctx context.Context, id string) (Provider, error) {
 func Build(ctx context.Context, sp *store.Provider, callbackURL string) (Provider, error) {
 	dec := func(v any) error {
 		if err := json.Unmarshal(sp.Config, v); err != nil {
-			return fmt.Errorf("provider %s settings: %w", sp.ID, err)
+			return msg.Wrap(msg.ProviderSettings, err, "id", sp.ID)
 		}
 		return nil
 	}
@@ -143,7 +142,7 @@ func Build(ctx context.Context, sp *store.Provider, callbackURL string) (Provide
 		}
 		return newLDAP(sp, c)
 	}
-	return nil, fmt.Errorf("unknown provider type %q", sp.Type)
+	return nil, msg.New(msg.ProviderUnknownType, "type", sp.Type)
 }
 
 // Redacted returns a provider's settings with secrets replaced, for the API.
@@ -152,7 +151,7 @@ func Redacted(sp *store.Provider) json.RawMessage {
 	if json.Unmarshal(sp.Config, &m) != nil {
 		return nil
 	}
-	for _, k := range []string{"clientSecret", "bindPassword"} {
+	for _, k := range secretFields {
 		if v, ok := m[k].(string); ok && v != "" {
 			m[k] = SecretPlaceholder
 		}
@@ -160,6 +159,9 @@ func Redacted(sp *store.Provider) json.RawMessage {
 	b, _ := json.Marshal(m)
 	return b
 }
+
+// secretFields are the provider settings that are secrets.
+var secretFields = []string{"clientSecret", "bindPassword"}
 
 // SecretPlaceholder stands for a stored secret in the API; sending it back
 // keeps the stored value.
@@ -171,11 +173,20 @@ func MergeSecrets(old, updated json.RawMessage) json.RawMessage {
 	if json.Unmarshal(old, &o) != nil || json.Unmarshal(updated, &n) != nil {
 		return updated
 	}
-	for _, k := range []string{"clientSecret", "bindPassword"} {
+	for _, k := range secretFields {
 		if n[k] == SecretPlaceholder {
 			n[k] = o[k]
 		}
 	}
 	b, _ := json.Marshal(n)
 	return b
+}
+
+// providerRefused reports an OAuth error the provider sent back to the callback.
+func providerRefused(code, description string) error {
+	detail := code
+	if description != "" {
+		detail += ": " + description
+	}
+	return msg.New(msg.ProviderRefused, "error", detail)
 }

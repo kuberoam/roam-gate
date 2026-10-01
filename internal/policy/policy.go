@@ -9,8 +9,6 @@ package policy
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"log/slog"
 	"maps"
 	"slices"
@@ -21,10 +19,13 @@ import (
 
 	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/validate/content"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/kuberoam/roam-gate/internal/identity"
 	"github.com/kuberoam/roam-gate/internal/kube"
+	"github.com/kuberoam/roam-gate/internal/msg"
 	"github.com/kuberoam/roam-gate/internal/store"
 )
 
@@ -34,9 +35,20 @@ const ObjectPrefix = "roam-gate-"
 // Status is the last reconcile's outcome for one binding.
 type Status struct {
 	OK      bool      `json:"ok"`
-	Message string    `json:"message,omitempty"`
+	Message string    `json:"message,omitempty"` // the problems, in English; see Localized
 	Objects []string  `json:"objects,omitempty"` // what exists for it in the cluster
 	Checked time.Time `json:"checked"`
+	errs    []error
+}
+
+// Localized is the status with its message in lang.
+func (s Status) Localized(lang string) Status {
+	parts := make([]string, len(s.errs))
+	for i, e := range s.errs {
+		parts[i] = msg.Localize(lang, e)
+	}
+	s.Message = strings.Join(parts, "; ")
+	return s
 }
 
 type Reconciler struct {
@@ -91,7 +103,7 @@ func (r *Reconciler) Statuses() (map[string]Status, time.Time, string) {
 func Subject(b *store.Binding) (rbacv1.Subject, error) {
 	s := rbacv1.Subject{APIGroup: rbacv1.GroupName}
 	if strings.TrimSpace(b.Subject) == "" {
-		return s, errors.New("subject is required")
+		return s, msg.New(msg.SubjectRequired)
 	}
 	switch b.SubjectKind {
 	case store.SubjectUser:
@@ -105,7 +117,7 @@ func Subject(b *store.Binding) (rbacv1.Subject, error) {
 	case store.SubjectK8sGroup:
 		s.Kind, s.Name = rbacv1.GroupKind, b.Subject
 	default:
-		return s, fmt.Errorf("unknown subject kind %q", b.SubjectKind)
+		return s, msg.New(msg.SubjectKindUnknown, "kind", b.SubjectKind)
 	}
 	return s, nil
 }
@@ -115,23 +127,60 @@ func Validate(b *store.Binding) error {
 	if _, err := Subject(b); err != nil {
 		return err
 	}
-	if strings.TrimSpace(b.Role) == "" {
-		return errors.New("role is required")
+	if err := checkSubject(b); err != nil {
+		return err
+	}
+	b.Role = strings.TrimSpace(b.Role)
+	if b.Role == "" {
+		return msg.New(msg.RoleRequired)
+	}
+	if len(content.IsPathSegmentName(b.Role)) > 0 {
+		return msg.New(msg.RoleInvalid, "role", b.Role)
 	}
 	switch b.Scope {
 	case store.ScopeCluster:
 		b.Namespaces = nil
 	case store.ScopeNamespaces:
+		b.Namespaces = slices.Compact(slices.Sorted(slices.Values(b.Namespaces)))
 		if len(b.Namespaces) == 0 {
-			return errors.New("pick at least one namespace, or use cluster scope")
+			return msg.New(msg.NamespacesRequired)
+		}
+		for _, ns := range b.Namespaces {
+			if len(validation.IsDNS1123Label(ns)) > 0 {
+				return msg.New(msg.NamespaceInvalid, "namespace", ns)
+			}
 		}
 	default:
-		return fmt.Errorf("scope must be %q or %q", store.ScopeCluster, store.ScopeNamespaces)
+		return msg.New(msg.ScopeInvalid)
 	}
 	if b.SubjectKind == store.SubjectAWS {
 		if _, _, err := parseARN(b.Subject); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// reservedSubjects are Kubernetes users and groups that stand for far more
+// than a person or team: granting them a role through Gate would open the
+// cluster to everyone they cover.
+var reservedSubjects = map[string]string{
+	"system:unauthenticated": "anyone, without signing in",
+	"system:anonymous":       "anyone, without signing in",
+	"system:authenticated":   "every user and service account of the cluster",
+	"system:serviceaccounts": "every service account of the cluster",
+	"system:masters":         "the cluster's built-in administrators",
+}
+
+func checkSubject(b *store.Binding) error {
+	if b.SubjectKind != store.SubjectK8sUser && b.SubjectKind != store.SubjectK8sGroup {
+		return nil
+	}
+	if who, ok := reservedSubjects[b.Subject]; ok {
+		return msg.New(msg.SubjectReserved, "subject", b.Subject, "who", who)
+	}
+	if strings.HasPrefix(b.Subject, identity.KubePrefix) {
+		return msg.New(msg.SubjectUseGateKind, "subject", b.Subject)
 	}
 	return nil
 }
@@ -175,10 +224,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 		s := status[id]
 		s.Checked = now
 		if err != nil {
-			if s.Message != "" {
-				s.Message += "; "
-			}
-			s.Message += err.Error()
+			s.errs = append(s.errs, err)
 		} else if obj != "" {
 			s.Objects = append(s.Objects, obj)
 		}
@@ -211,75 +257,51 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 	sel := metav1.ListOptions{LabelSelector: kube.ManagedSelector()}
 	crbs, err := r.kc.RBAC.ClusterRoleBindings().List(ctx, sel)
 	if err != nil {
-		return r.fail(fmt.Errorf("listing ClusterRoleBindings: %w", err))
+		return r.fail(msg.Wrap(msg.RBACListFailed, err, "what", "ClusterRoleBindings"))
 	}
-	for i := range crbs.Items {
-		have := &crbs.Items[i]
-		want, ok := wantCRB[have.Name]
-		if !ok {
-			err := r.kc.RBAC.ClusterRoleBindings().Delete(ctx, have.Name, metav1.DeleteOptions{})
-			if err != nil && !apierrors.IsNotFound(err) {
-				slog.Warn("deleting stale ClusterRoleBinding", "name", have.Name, "err", err)
-			}
-			continue
-		}
-		delete(wantCRB, have.Name)
-		id := owner["crb/"+have.Name]
-		switch {
-		case have.RoleRef != want.RoleRef: // immutable: recreate
-			err = r.kc.RBAC.ClusterRoleBindings().Delete(ctx, have.Name, metav1.DeleteOptions{})
-			if err == nil {
-				_, err = r.kc.RBAC.ClusterRoleBindings().Create(ctx, want, metav1.CreateOptions{})
-			}
-		case !slices.Equal(have.Subjects, want.Subjects) || !sameMeta(have.ObjectMeta, want.ObjectMeta):
-			have.Subjects, have.Labels, have.Annotations = want.Subjects, want.Labels, want.Annotations
-			_, err = r.kc.RBAC.ClusterRoleBindings().Update(ctx, have, metav1.UpdateOptions{})
-		}
-		note(id, "ClusterRoleBinding/"+have.Name, err)
-	}
-	for name, want := range wantCRB {
-		_, err := r.kc.RBAC.ClusterRoleBindings().Create(ctx, want, metav1.CreateOptions{})
-		note(owner["crb/"+name], "ClusterRoleBinding/"+name, err)
-	}
+	crbAPI := r.kc.RBAC.ClusterRoleBindings()
+	syncObjects(ctx, "ClusterRoleBinding", "crb/", crbs.Items, wantCRB, owner, note, rbacOps[rbacv1.ClusterRoleBinding]{
+		key:      func(o *rbacv1.ClusterRoleBinding) string { return o.Name },
+		meta:     func(o *rbacv1.ClusterRoleBinding) *metav1.ObjectMeta { return &o.ObjectMeta },
+		roleRef:  func(o *rbacv1.ClusterRoleBinding) rbacv1.RoleRef { return o.RoleRef },
+		subjects: func(o *rbacv1.ClusterRoleBinding) *[]rbacv1.Subject { return &o.Subjects },
+		create: func(ctx context.Context, o *rbacv1.ClusterRoleBinding) error {
+			_, err := crbAPI.Create(ctx, o, metav1.CreateOptions{})
+			return err
+		},
+		update: func(ctx context.Context, o *rbacv1.ClusterRoleBinding) error {
+			_, err := crbAPI.Update(ctx, o, metav1.UpdateOptions{})
+			return err
+		},
+		delete: func(ctx context.Context, o *rbacv1.ClusterRoleBinding) error {
+			return crbAPI.Delete(ctx, o.Name, metav1.DeleteOptions{})
+		},
+	})
 
 	rbs, err := r.kc.RBAC.RoleBindings("").List(ctx, sel)
 	if err != nil {
-		return r.fail(fmt.Errorf("listing RoleBindings: %w", err))
+		return r.fail(msg.Wrap(msg.RBACListFailed, err, "what", "RoleBindings"))
 	}
-	for i := range rbs.Items {
-		have := &rbs.Items[i]
-		key := have.Namespace + "/" + have.Name
-		want, ok := wantRB[key]
-		if !ok {
-			err := r.kc.RBAC.RoleBindings(have.Namespace).Delete(ctx, have.Name, metav1.DeleteOptions{})
-			if err != nil && !apierrors.IsNotFound(err) {
-				slog.Warn("deleting stale RoleBinding", "key", key, "err", err)
+	syncObjects(ctx, "RoleBinding", "rb/", rbs.Items, wantRB, owner, note, rbacOps[rbacv1.RoleBinding]{
+		key:      func(o *rbacv1.RoleBinding) string { return o.Namespace + "/" + o.Name },
+		meta:     func(o *rbacv1.RoleBinding) *metav1.ObjectMeta { return &o.ObjectMeta },
+		roleRef:  func(o *rbacv1.RoleBinding) rbacv1.RoleRef { return o.RoleRef },
+		subjects: func(o *rbacv1.RoleBinding) *[]rbacv1.Subject { return &o.Subjects },
+		create: func(ctx context.Context, o *rbacv1.RoleBinding) error {
+			_, err := r.kc.RBAC.RoleBindings(o.Namespace).Create(ctx, o, metav1.CreateOptions{})
+			if apierrors.IsNotFound(err) {
+				return msg.New(msg.NamespaceMissing, "namespace", o.Namespace)
 			}
-			continue
-		}
-		delete(wantRB, key)
-		id := owner["rb/"+key]
-		switch {
-		case have.RoleRef != want.RoleRef:
-			err = r.kc.RBAC.RoleBindings(have.Namespace).Delete(ctx, have.Name, metav1.DeleteOptions{})
-			if err == nil {
-				_, err = r.kc.RBAC.RoleBindings(have.Namespace).Create(ctx, want, metav1.CreateOptions{})
-			}
-		case !slices.Equal(have.Subjects, want.Subjects) || !sameMeta(have.ObjectMeta, want.ObjectMeta):
-			have.Subjects, have.Labels, have.Annotations = want.Subjects, want.Labels, want.Annotations
-			_, err = r.kc.RBAC.RoleBindings(have.Namespace).Update(ctx, have, metav1.UpdateOptions{})
-		}
-		note(id, "RoleBinding/"+key, err)
-	}
-	keys := slices.Sorted(maps.Keys(wantRB))
-	for _, key := range keys {
-		want := wantRB[key]
-		_, err := r.kc.RBAC.RoleBindings(want.Namespace).Create(ctx, want, metav1.CreateOptions{})
-		if apierrors.IsNotFound(err) {
-			err = fmt.Errorf("namespace %s does not exist", want.Namespace)
-		}
-		note(owner["rb/"+key], "RoleBinding/"+key, err)
-	}
+			return err
+		},
+		update: func(ctx context.Context, o *rbacv1.RoleBinding) error {
+			_, err := r.kc.RBAC.RoleBindings(o.Namespace).Update(ctx, o, metav1.UpdateOptions{})
+			return err
+		},
+		delete: func(ctx context.Context, o *rbacv1.RoleBinding) error {
+			return r.kc.RBAC.RoleBindings(o.Namespace).Delete(ctx, o.Name, metav1.DeleteOptions{})
+		},
+	})
 
 	if err := r.reconcileAWSAuth(ctx, bindings, note); err != nil {
 		slog.Warn("aws-auth", "err", err)
@@ -288,14 +310,57 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 	for _, b := range bindings {
 		s := status[b.ID]
 		s.Checked = now
-		s.OK = s.Message == ""
+		s.OK = len(s.errs) == 0
 		sort.Strings(s.Objects)
-		status[b.ID] = s
+		status[b.ID] = s.Localized(msg.DefaultLang)
 	}
 	r.mu.Lock()
 	r.status, r.last, r.lastErr = status, now, ""
 	r.mu.Unlock()
 	return nil
+}
+
+// rbacOps adapts ClusterRoleBindings and RoleBindings to one sync routine.
+type rbacOps[T any] struct {
+	key                    func(*T) string
+	meta                   func(*T) *metav1.ObjectMeta
+	roleRef                func(*T) rbacv1.RoleRef
+	subjects               func(*T) *[]rbacv1.Subject
+	create, update, delete func(context.Context, *T) error
+}
+
+// syncObjects makes the existing Gate objects of one kind match want: stale
+// ones are deleted, edited ones repaired (a changed roleRef is immutable, so
+// recreated), missing ones created. want is consumed.
+func syncObjects[T any](ctx context.Context, kind, ownerPrefix string, have []T, want map[string]*T, owner map[string]string,
+	note func(id, obj string, err error), ops rbacOps[T]) {
+	for i := range have {
+		obj := &have[i]
+		key := ops.key(obj)
+		w, ok := want[key]
+		if !ok {
+			if err := ops.delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
+				slog.Warn("deleting stale "+kind, "key", key, "err", err)
+			}
+			continue
+		}
+		delete(want, key)
+		var err error
+		switch {
+		case ops.roleRef(obj) != ops.roleRef(w):
+			if err = ops.delete(ctx, obj); err == nil {
+				err = ops.create(ctx, w)
+			}
+		case !slices.Equal(*ops.subjects(obj), *ops.subjects(w)) || !sameMeta(*ops.meta(obj), *ops.meta(w)):
+			m, wm := ops.meta(obj), ops.meta(w)
+			*ops.subjects(obj), m.Labels, m.Annotations = *ops.subjects(w), wm.Labels, wm.Annotations
+			err = ops.update(ctx, obj)
+		}
+		note(owner[ownerPrefix+key], kind+"/"+key, err)
+	}
+	for _, key := range slices.Sorted(maps.Keys(want)) {
+		note(owner[ownerPrefix+key], kind+"/"+key, ops.create(ctx, want[key]))
+	}
 }
 
 func (r *Reconciler) fail(err error) error {

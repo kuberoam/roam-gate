@@ -74,25 +74,61 @@ func TestSessions(t *testing.T) {
 func TestLoginRequest(t *testing.T) {
 	st := open(t)
 	ctx := context.Background()
-	if err := st.CreateLoginRequest(ctx, "r1", "poll", time.Minute); err != nil {
+	if err := st.CreateLoginRequest(ctx, "r1", "poll", "http://127.0.0.1:5555/cb", time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	if _, state, _, err := st.CollectLogin(ctx, "r1", "poll"); err != nil || state != "pending" {
+	if r, err := st.LoginRequest(ctx, "r1"); err != nil || r.ReturnURL != "http://127.0.0.1:5555/cb" {
+		t.Fatalf("lookup: %v %+v", err, r)
+	}
+	if _, state, _, err := st.CollectLogin(ctx, "r1", "poll", ""); err != nil || state != LoginPending {
 		t.Fatalf("pending: %v %s", err, state)
 	}
-	if _, _, _, err := st.CollectLogin(ctx, "r1", "wrong"); !errors.Is(err, ErrNotFound) {
+	if _, _, _, err := st.CollectLogin(ctx, "r1", "wrong", ""); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("wrong secret must not reveal anything: %v", err)
 	}
-	if err := st.FinishLoginRequest(ctx, "r1", "rg_tok", ""); err != nil {
-		t.Fatal(err)
+	code, err := st.FinishLoginRequest(ctx, "r1", "rg_tok", "")
+	if err != nil || code == "" {
+		t.Fatalf("finish: %v %q", err, code)
 	}
-	tok, state, _, err := st.CollectLogin(ctx, "r1", "poll")
-	if err != nil || state != "done" || tok != "rg_tok" {
+	if _, err := st.LoginRequest(ctx, "r1"); !errors.Is(err, ErrNotFound) {
+		t.Fatal("a finished request is no longer pending")
+	}
+	// The poll secret alone is not enough: the code went to the app's own computer.
+	if tok, _, _, err := st.CollectLogin(ctx, "r1", "poll", "guess"); err == nil || tok != "" {
+		t.Fatalf("wrong code: %v %q", err, tok)
+	}
+	tok, state, _, err := st.CollectLogin(ctx, "r1", "poll", code)
+	if err != nil || state != LoginDone || tok != "rg_tok" {
 		t.Fatalf("collect: %v %s %s", err, state, tok)
 	}
 	// The token can only be collected once.
-	if _, _, _, err := st.CollectLogin(ctx, "r1", "poll"); !errors.Is(err, ErrNotFound) {
+	if _, _, _, err := st.CollectLogin(ctx, "r1", "poll", code); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("second collect: %v", err)
+	}
+	// A failed sign-in has no code and says why.
+	st.CreateLoginRequest(ctx, "r2", "poll", "http://127.0.0.1:5555/cb", time.Minute)
+	if code, err := st.FinishLoginRequest(ctx, "r2", "", "denied"); err != nil || code != "" {
+		t.Fatalf("fail: %v %q", err, code)
+	}
+	if _, state, failure, _ := st.CollectLogin(ctx, "r2", "poll", ""); state != LoginFailed || failure != "denied" {
+		t.Fatalf("failed state: %s %s", state, failure)
+	}
+}
+
+func TestRevokeProviderSessions(t *testing.T) {
+	st := open(t)
+	ctx := context.Background()
+	now := time.Now()
+	st.CreateSession(ctx, &Session{ID: "a", User: "u", Provider: "github", Created: now, Expires: now.Add(time.Hour)}, "rg_a")
+	st.CreateSession(ctx, &Session{ID: "b", User: "u", Provider: "ldap", Created: now, Expires: now.Add(time.Hour)}, "rg_b")
+	if n, err := st.RevokeProviderSessions(ctx, "github"); err != nil || n != 1 {
+		t.Fatalf("revoke: %d %v", n, err)
+	}
+	if _, err := st.SessionByToken(ctx, "rg_a"); !errors.Is(err, ErrNotFound) {
+		t.Fatal("github session should be revoked")
+	}
+	if _, err := st.SessionByToken(ctx, "rg_b"); err != nil {
+		t.Fatal("ldap session must stay")
 	}
 }
 

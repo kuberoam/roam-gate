@@ -18,6 +18,7 @@ import (
 	"github.com/kuberoam/roam-gate/internal/auth"
 	"github.com/kuberoam/roam-gate/internal/config"
 	"github.com/kuberoam/roam-gate/internal/identity"
+	"github.com/kuberoam/roam-gate/internal/msg"
 	"github.com/kuberoam/roam-gate/internal/store"
 )
 
@@ -57,17 +58,24 @@ func New(apiServer string, transport http.RoundTripper, sessions Sessions, rec *
 		FlushInterval: -1, // watches and log streams go out as they arrive
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			slog.Warn("proxy error", "path", r.URL.Path, "err", err)
-			writeStatus(w, http.StatusBadGateway, "Gate could not reach the Kubernetes API server")
+			writeStatus(w, http.StatusBadGateway, msg.T(msg.Lang(r), msg.APIServerUnreachable))
 		},
 	}
 	return &Proxy{rp: rp, sessions: sessions, rec: rec, level: level}, nil
+}
+
+// statusReasons are the metav1.StatusReason values kubectl expects.
+var statusReasons = map[int]string{
+	http.StatusUnauthorized: "Unauthorized",
+	http.StatusForbidden:    "Forbidden",
+	http.StatusBadGateway:   "ServiceUnavailable",
 }
 
 // writeStatus answers the way the API server does, so kubectl prints it well.
 func writeStatus(w http.ResponseWriter, code int, msg string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	reason := map[int]string{401: "Unauthorized", 403: "Forbidden", 502: "ServiceUnavailable"}[code]
+	reason := statusReasons[code]
 	json.NewEncoder(w).Encode(map[string]any{
 		"kind": "Status", "apiVersion": "v1", "status": "Failure", "message": msg, "reason": reason, "code": code,
 	})
@@ -96,20 +104,28 @@ func (s *statusWriter) Write(b []byte) (int, error) {
 
 func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
-// ClientIP is the caller's address, trusting X-Forwarded-For only from a
-// proxy in front of Gate (an ingress on a private address).
+// ClientIP is the caller's address. Behind a proxy on a private address (an
+// ingress), it is the rightmost X-Forwarded-For entry that isn't one too: the
+// entries to its left were written by the client and can say anything.
 func ClientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		host = r.RemoteAddr
 	}
-	if ip := net.ParseIP(host); ip != nil && (ip.IsPrivate() || ip.IsLoopback()) {
-		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-			return strings.TrimSpace(strings.Split(fwd, ",")[0])
+	if !internal(net.ParseIP(host)) {
+		return host
+	}
+	hops := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+	for i := len(hops) - 1; i >= 0; i-- {
+		h := strings.TrimSpace(hops[i])
+		if ip := net.ParseIP(h); ip != nil && !internal(ip) {
+			return h
 		}
 	}
 	return host
 }
+
+func internal(ip net.IP) bool { return ip != nil && (ip.IsPrivate() || ip.IsLoopback()) }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
@@ -120,7 +136,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		p.rec.Record(&store.Event{Kind: store.KindRequest, Verb: info.Verb, Resource: info.Resource, Subresource: info.Subresource,
 			Namespace: info.Namespace, Name: info.Name, Path: path, Status: http.StatusUnauthorized, Allowed: false,
 			IP: ClientIP(r), UA: r.UserAgent(), Detail: `{"reason":"invalid or expired token"}`})
-		writeStatus(w, http.StatusUnauthorized, "Sign in to Roam Gate again: the token is missing, expired or revoked.")
+		writeStatus(w, http.StatusUnauthorized, msg.T(msg.Lang(r), msg.NotSignedIn))
 		return
 	}
 
