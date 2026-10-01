@@ -1,8 +1,9 @@
 // Package kube is Gate's access to the Kubernetes API: the transport the
 // proxy forwards with, and the few typed clients the RBAC reconciler needs.
 //
-// Only the RBAC and core clients are built (not the whole Clientset), and
-// nothing is watched or cached, which keeps Gate's memory flat on big clusters.
+// Only the RBAC and core clients are built (not the whole Clientset), and the
+// only things watched are Gate's own (Cluster)RoleBindings, by label — so
+// Gate's memory stays flat however big the cluster is.
 package kube
 
 import (
@@ -30,6 +31,10 @@ type Client struct {
 	Config *rest.Config
 	RBAC   rbacv1client.RbacV1Interface
 	Core   corev1client.CoreV1Interface
+	// WatchListSemantics is what tells informers whether the client can
+	// stream an initial list (cache.ToListWatcherWithWatchListSemantics):
+	// nil for a real cluster, the fake clientset in tests.
+	WatchListSemantics any
 }
 
 // New connects with the service account, or with a kubeconfig outside the

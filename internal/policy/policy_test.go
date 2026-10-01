@@ -36,7 +36,7 @@ func setup(t *testing.T, objs ...any) (*Reconciler, *store.Store, *fake.Clientse
 			cs.RbacV1().ClusterRoleBindings().Create(context.Background(), x, metav1.CreateOptions{})
 		}
 	}
-	kc := &kube.Client{RBAC: cs.RbacV1(), Core: cs.CoreV1()}
+	kc := &kube.Client{RBAC: cs.RbacV1(), Core: cs.CoreV1(), WatchListSemantics: cs}
 	return New(kc, st, time.Minute), st, cs
 }
 
@@ -179,4 +179,40 @@ func TestValidate(t *testing.T) {
 	if err := Validate(&dup); err != nil || len(dup.Namespaces) != 2 || dup.Role != "system:aggregate-to-view" {
 		t.Fatalf("normalised: %v %+v", err, dup)
 	}
+}
+
+// An edit by hand to one of Gate's bindings is undone right away by the
+// watch, not at the next tick of the timer.
+func TestRunRepairsHandEditsImmediately(t *testing.T) {
+	r, st, cs := setup(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	st.SaveBinding(ctx, &store.Binding{ID: "b1", SubjectKind: store.SubjectGroup, Subject: "github:acme/sre", Role: "view", Scope: store.ScopeCluster})
+	go r.Run(ctx) // interval is a minute: only the watch can be this quick
+	waitFor := func(what string, ok func() bool) {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+			if ok() {
+				return
+			}
+		}
+		t.Fatalf("timed out waiting for %s", what)
+	}
+	get := func() *rbacv1.ClusterRoleBinding {
+		crb, err := cs.RbacV1().ClusterRoleBindings().Get(ctx, "roam-gate-b1", metav1.GetOptions{})
+		if err != nil {
+			return nil
+		}
+		return crb
+	}
+	waitFor("the binding", func() bool { return get() != nil })
+	time.Sleep(2 * debounce) // let the first round of events settle
+
+	crb := get()
+	crb.Subjects[0].Name = "system:anonymous"
+	cs.RbacV1().ClusterRoleBindings().Update(ctx, crb, metav1.UpdateOptions{})
+	waitFor("the edit to be undone", func() bool { c := get(); return c != nil && c.Subjects[0].Name == "roam:github:acme/sre" })
+
+	cs.RbacV1().ClusterRoleBindings().Delete(ctx, "roam-gate-b1", metav1.DeleteOptions{})
+	waitFor("the binding to be recreated", func() bool { return get() != nil })
 }

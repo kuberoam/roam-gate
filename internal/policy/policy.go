@@ -21,7 +21,10 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/validate/content"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/apimachinery/pkg/watch"
+	"k8s.io/client-go/tools/cache"
 
 	"github.com/kuberoam/roam-gate/internal/identity"
 	"github.com/kuberoam/roam-gate/internal/kube"
@@ -75,8 +78,14 @@ func (r *Reconciler) Trigger() {
 	}
 }
 
-// Run reconciles on a timer and on Trigger until ctx ends.
+// debounce coalesces bursts of changes (an informer's first list, Gate's
+// own writes coming back as events) into one reconcile.
+const debounce = 300 * time.Millisecond
+
+// Run reconciles on a timer, on Trigger, and whenever one of Gate's own RBAC
+// objects is edited or deleted by someone else, until ctx ends.
 func (r *Reconciler) Run(ctx context.Context) {
+	r.watch(ctx)
 	t := time.NewTicker(r.interval)
 	defer t.Stop()
 	for {
@@ -88,8 +97,64 @@ func (r *Reconciler) Run(ctx context.Context) {
 			return
 		case <-t.C:
 		case <-r.kick:
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(debounce):
+			}
+			select { // drop kicks that arrived meanwhile: this reconcile covers them
+			case <-r.kick:
+			default:
+			}
 		}
 	}
+}
+
+// watch runs label-filtered informers on Gate's ClusterRoleBindings and
+// RoleBindings. Their events only trigger a reconcile — which reads the API
+// itself, so it never acts on a cache that hasn't caught up with Gate's own
+// writes — and an edit by hand is undone within a second instead of at the
+// next tick. Without watch permission Gate falls back to the timer alone.
+func (r *Reconciler) watch(ctx context.Context) {
+	filter := func(o *metav1.ListOptions) { o.LabelSelector = kube.ManagedSelector() }
+	trigger := cache.ResourceEventHandlerFuncs{
+		AddFunc:    func(any) { r.Trigger() },
+		UpdateFunc: func(any, any) { r.Trigger() },
+		DeleteFunc: func(any) { r.Trigger() },
+	}
+	start := func(kind string, obj runtime.Object, lw *cache.ListWatch) {
+		inf := cache.NewSharedIndexInformer(cache.ToListWatcherWithWatchListSemantics(lw, r.kc.WatchListSemantics), obj, 0, cache.Indexers{})
+		ictx, stop := context.WithCancel(ctx)
+		_ = inf.SetWatchErrorHandlerWithContext(func(_ context.Context, _ *cache.Reflector, err error) {
+			if apierrors.IsForbidden(err) || apierrors.IsUnauthorized(err) {
+				slog.Warn("can't watch "+kind+"; reconciling on the timer only", "err", err)
+				stop()
+			}
+		})
+		_, _ = inf.AddEventHandler(trigger)
+		go inf.RunWithContext(ictx)
+	}
+	crbs, rbs := r.kc.RBAC.ClusterRoleBindings(), r.kc.RBAC.RoleBindings("")
+	start("ClusterRoleBindings", &rbacv1.ClusterRoleBinding{}, &cache.ListWatch{
+		ListWithContextFunc: func(ctx context.Context, o metav1.ListOptions) (runtime.Object, error) {
+			filter(&o)
+			return crbs.List(ctx, o)
+		},
+		WatchFuncWithContext: func(ctx context.Context, o metav1.ListOptions) (watch.Interface, error) {
+			filter(&o)
+			return crbs.Watch(ctx, o)
+		},
+	})
+	start("RoleBindings", &rbacv1.RoleBinding{}, &cache.ListWatch{
+		ListWithContextFunc: func(ctx context.Context, o metav1.ListOptions) (runtime.Object, error) {
+			filter(&o)
+			return rbs.List(ctx, o)
+		},
+		WatchFuncWithContext: func(ctx context.Context, o metav1.ListOptions) (watch.Interface, error) {
+			filter(&o)
+			return rbs.Watch(ctx, o)
+		},
+	})
 }
 
 // Statuses returns each binding's last reconcile outcome.

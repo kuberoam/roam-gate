@@ -24,7 +24,7 @@ Roam Gate is the access-control service behind [Roam](https://github.com/kuberoa
 
 1. People sign in with SSO. Gate issues a session token (`rg_…`) and a kubeconfig whose server is `https://<gate>/k8s`.
 2. Gate authenticates each request and forwards it to the API server as the person, using impersonation: user `roam:<id>`, groups `roam:<provider>:<group>` and `roam:authenticated`. Anything the client sends to impersonate someone else is dropped.
-3. The API server's own RBAC decides. Gate turns its *bindings* ("group `github:acme/devs` gets `edit` in `staging`") into RoleBindings / ClusterRoleBindings labelled `kuberoam.dev/managed-by=roam-gate`, and keeps them in shape (drift is repaired; deleting a binding removes its objects; nothing else is touched).
+3. The API server's own RBAC decides. Gate turns its *bindings* ("group `github:acme/devs` gets `edit` in `staging`") into RoleBindings / ClusterRoleBindings labelled `kuberoam.dev/managed-by=roam-gate`, and keeps them in shape: it watches only its own objects (by label), so an edit by hand or a deletion is undone within a second; deleting a binding removes its objects; nothing else is touched.
 4. Every request worth investigating is recorded, together with sign-ins, session revocations and admin changes (with before/after).
 
 Identity naming: a user is their verified email (lowercase), or `<provider>:<login>` when there is none. Groups are `<provider>:<group>` — e.g. `github:acme` (org), `github:acme/platform` (team), `gitlab:infra/sre`, `ldap:k8s-admins`.
