@@ -92,7 +92,7 @@ spec:
               value: /tls/tls.crt
             - name: GATE_TLS_KEY
               value: /tls/tls.key
-            {{- if or (eq .Values.tls.mode "selfSigned") .Values.tls.secretHasCA }}
+            {{- if or (eq .Values.tls.mode "selfSigned") (and (has .Values.tls.mode (list "secret" "certManager")) .Values.tls.secretHasCA) }}
             - name: GATE_CA_FILE
               value: /tls/ca.crt
             {{- end }}

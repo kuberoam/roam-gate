@@ -3,8 +3,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -70,7 +72,12 @@ func run() error {
 
 	var caPEM []byte
 	if cfg.CAFile != "" {
-		if caPEM, err = os.ReadFile(cfg.CAFile); err != nil {
+		// A cert-manager Secret has no ca.crt for ACME issuers: then kubeconfigs
+		// carry no CA and rely on the system's.
+		if caPEM, err = os.ReadFile(cfg.CAFile); errors.Is(err, fs.ErrNotExist) || (err == nil && len(bytes.TrimSpace(caPEM)) == 0) {
+			slog.Warn("no CA certificate to put in kubeconfigs", "file", cfg.CAFile)
+			caPEM = nil
+		} else if err != nil {
 			return err
 		}
 	}

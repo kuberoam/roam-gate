@@ -1,4 +1,5 @@
 {{- if .Values.ingress.enabled -}}
+{{- if .Values.ingress.issuer.name }}{{ include "gate.requireCertManager" . }}{{ end -}}
 {{- /*
   An Ingress no controller picks up installs fine and then answers 404, so check
   the class against the cluster. lookup is empty without a cluster (helm template,
@@ -38,6 +39,9 @@ metadata:
     {{- if ne .Values.tls.mode "none" }}
     nginx.ingress.kubernetes.io/backend-protocol: HTTPS
     {{- end }}
+    {{- with .Values.ingress.issuer.name }}
+    {{ ternary "cert-manager.io/cluster-issuer" "cert-manager.io/issuer" (eq $.Values.ingress.issuer.kind "ClusterIssuer") }}: {{ . | quote }}
+    {{- end }}
     # kubectl exec/attach/port-forward and watches are long-lived.
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
@@ -48,10 +52,10 @@ spec:
   {{- with .Values.ingress.className }}
   ingressClassName: {{ . }}
   {{- end }}
-  {{- if .Values.ingress.tlsSecretName }}
+  {{- with include "gate.ingressTLSSecret" . }}
   tls:
-    - hosts: [{{ required "ingress.host is required" .Values.ingress.host | quote }}]
-      secretName: {{ .Values.ingress.tlsSecretName }}
+    - hosts: [{{ required "ingress.host is required" $.Values.ingress.host | quote }}]
+      secretName: {{ . }}
   {{- end }}
   rules:
     - host: {{ required "ingress.host is required" .Values.ingress.host | quote }}

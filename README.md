@@ -47,7 +47,9 @@ Common settings (see [`values.yaml`](chart/roam-gate/values.yaml)):
 | `ingress.enabled`, `ingress.host`, `ingress.className`, `ingress.tlsSecretName` | off | Expose Gate through an Ingress |
 | `ingress.checkClass` | `true` | Fail the install when no IngressClass would serve the Ingress (no `className` and no default class, or a class the cluster doesn't have) |
 | `service.type` | `ClusterIP` | `LoadBalancer` to expose it directly |
-| `tls.mode` | `selfSigned` | `selfSigned` (CA embedded in kubeconfigs), `secret` (e.g. cert-manager), `none` (TLS at the Ingress) |
+| `tls.mode` | `selfSigned` | `selfSigned` (CA embedded in kubeconfigs), `secret` (an existing TLS Secret), `certManager` (issued from `tls.issuer`), `none` (TLS at the Ingress) |
+| `tls.issuer.kind`, `tls.issuer.name` | `ClusterIssuer`, – | cert-manager Issuer or ClusterIssuer for `tls.mode=certManager`; `tls.secretHasCA` puts a private CA in kubeconfigs |
+| `ingress.issuer.kind`, `ingress.issuer.name` | `ClusterIssuer`, – | cert-manager issues the Ingress certificate (into `ingress.tlsSecretName`, or `<release>-ingress-tls`) |
 | `admins.users` / `admins.groups` | – | Who may administer Gate after SSO is set up |
 | `audit.level` | `writes` | `writes` or `all` (reads too) |
 | `audit.retention` | `90d` | Older events are pruned hourly |

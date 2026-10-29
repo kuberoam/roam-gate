@@ -14,7 +14,16 @@
       "pattern": "^[0-9]+(\\.[0-9]+)?([KMGTPE]i?|[mkMGTPE]|e[0-9]+)?$"
     },
     "strings": { "type": "array", "items": { "type": "string" } },
-    "stringMap": { "type": "object", "additionalProperties": { "type": "string" } }
+    "stringMap": { "type": "object", "additionalProperties": { "type": "string" } },
+    "issuer": {
+      "description": "A cert-manager Issuer (in Gate's namespace) or ClusterIssuer.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "enum": ["ClusterIssuer", "Issuer"] },
+        "name": { "type": "string" }
+      }
+    }
   },
   "properties": {
     "global": { "type": "object" },
@@ -58,14 +67,23 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "mode": { "enum": ["selfSigned", "secret", "none"] },
+        "mode": { "enum": ["selfSigned", "secret", "certManager", "none"] },
         "secretName": { "type": "string" },
+        "issuer": { "$ref": "#/definitions/issuer" },
         "secretHasCA": { "type": "boolean" },
         "extraDNSNames": { "$ref": "#/definitions/strings" },
         "extraIPs": { "$ref": "#/definitions/strings" }
       },
-      "if": { "properties": { "mode": { "const": "secret" } }, "required": ["mode"] },
-      "then": { "properties": { "secretName": { "minLength": 1 } }, "required": ["secretName"] }
+      "allOf": [
+        {
+          "if": { "properties": { "mode": { "const": "secret" } }, "required": ["mode"] },
+          "then": { "properties": { "secretName": { "minLength": 1 } }, "required": ["secretName"] }
+        },
+        {
+          "if": { "properties": { "mode": { "const": "certManager" } }, "required": ["mode"] },
+          "then": { "properties": { "issuer": { "properties": { "name": { "minLength": 1 } }, "required": ["name"] } }, "required": ["issuer"] }
+        }
+      ]
     },
     "service": {
       "type": "object",
@@ -89,7 +107,8 @@
           "pattern": "^$|^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$"
         },
         "annotations": { "$ref": "#/definitions/stringMap" },
-        "tlsSecretName": { "type": "string" }
+        "tlsSecretName": { "type": "string" },
+        "issuer": { "$ref": "#/definitions/issuer" }
       },
       "if": { "properties": { "enabled": { "const": true } }, "required": ["enabled"] },
       "then": { "properties": { "host": { "minLength": 1 } }, "required": ["host"] }

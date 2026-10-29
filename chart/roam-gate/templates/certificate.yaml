@@ -1,0 +1,27 @@
+{{- if eq .Values.tls.mode "certManager" -}}
+{{- include "gate.requireCertManager" . -}}
+{{- $issuer := required "tls.issuer.name is required with tls.mode=certManager" .Values.tls.issuer.name -}}
+{{- $dns := list (include "gate.externalHost" .) -}}
+{{- with .Values.ingress.host }}{{ $dns = append $dns . }}{{ end -}}
+{{- $dns = concat $dns .Values.tls.extraDNSNames | uniq | compact -}}
+# Gate's own certificate, issued by cert-manager into the Secret it serves.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "gate.name" . }}-tls
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gate.labels" . | nindent 4 }}
+spec:
+  secretName: {{ include "gate.tlsSecret" . }}
+  dnsNames:
+    {{- toYaml $dns | nindent 4 }}
+  {{- with .Values.tls.extraIPs }}
+  ipAddresses:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  issuerRef:
+    group: cert-manager.io
+    kind: {{ .Values.tls.issuer.kind }}
+    name: {{ $issuer }}
+{{- end }}

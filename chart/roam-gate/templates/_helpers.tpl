@@ -37,3 +37,20 @@ https://localhost:8443
 {{ include "gate.name" . }}-tls
 {{- end -}}
 {{- end -}}
+
+{{- /* The host people reach Gate at (from the Gate URL), without a port. */ -}}
+{{- define "gate.externalHost" -}}
+{{- regexReplaceAll ":[0-9]+$" (urlParse (include "gate.externalURL" .)).host "" -}}
+{{- end -}}
+
+{{- /* Fails unless cert-manager's API is there. */ -}}
+{{- define "gate.requireCertManager" -}}
+{{- if not (.Capabilities.APIVersions.Has "cert-manager.io/v1") -}}
+{{- fail "cert-manager isn't installed in this cluster (no cert-manager.io/v1 API): install it, or pick another TLS option" -}}
+{{- end -}}
+{{- end -}}
+
+{{- /* The Ingress's TLS Secret: tlsSecretName, or one cert-manager fills in. */ -}}
+{{- define "gate.ingressTLSSecret" -}}
+{{- .Values.ingress.tlsSecretName | default (ternary (printf "%s-ingress-tls" (include "gate.name" .)) "" (ne .Values.ingress.issuer.name "")) -}}
+{{- end -}}

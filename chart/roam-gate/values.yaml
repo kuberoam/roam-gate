@@ -39,12 +39,19 @@ tls:
   # selfSigned: Helm generates a CA and certificate (kept across upgrades); issued
   #             kubeconfigs embed the CA.
   # secret:     use an existing kubernetes.io/tls Secret (e.g. from cert-manager).
+  # certManager: cert-manager issues it (a Certificate for the Gate URL's host,
+  #             the Ingress host and extraDNSNames) from tls.issuer.
   # none:       plain HTTP inside the cluster; terminate TLS at the Ingress.
   mode: selfSigned
   secretName: ""
-  # With mode "secret": embed the Secret's ca.crt in kubeconfigs (private CAs).
+  # With mode "certManager": the Issuer (in Gate's namespace) or ClusterIssuer.
+  issuer:
+    kind: ClusterIssuer
+    name: ""
+  # With mode "secret" or "certManager": embed the Secret's ca.crt in kubeconfigs
+  # (private CAs; ACME issuers such as Let's Encrypt have none).
   secretHasCA: false
-  # Extra names for the self-signed certificate.
+  # Extra names for the self-signed or cert-manager certificate.
   extraDNSNames: []
   extraIPs: []
 
@@ -66,6 +73,11 @@ ingress:
   annotations: {}
   # TLS Secret for the Ingress (e.g. created by cert-manager via annotations).
   tlsSecretName: ""
+  # cert-manager issues the Ingress certificate: an Issuer (in Gate's namespace)
+  # or ClusterIssuer. The Secret is tlsSecretName, or <release>-ingress-tls.
+  issuer:
+    kind: ClusterIssuer
+    name: ""
 
 persistence:
   # SQLite database: providers, users, bindings, sessions and the audit trail.
