@@ -52,9 +52,9 @@ Common settings (see [`values.yaml`](chart/roam-gate/values.yaml)):
 | `ingress.issuer.kind`, `ingress.issuer.name` | `ClusterIssuer`, – | cert-manager issues the Ingress certificate (into `ingress.tlsSecretName`, or `<release>-ingress-tls`) |
 | `admins.users` / `admins.groups` | – | Who may administer Gate after SSO is set up |
 | `audit.level` | `writes` | `writes` or `all` (reads too) |
-| `audit.retention` | `90d` | Older events are pruned hourly |
+| `audit.retention` | `30d` | Older events are pruned hourly |
 | `session.ttl` | `12h` | Session lifetime |
-| `persistence.size` | `2Gi` | The database, audit trail included; kept on uninstall (`persistence.keep`) |
+| `persistence.size` | `20Gi` | The database, audit trail included; kept on uninstall (`persistence.keep`) |
 | `eks.awsAuth` | `false` | Allow Gate to add its own entries to the `aws-auth` ConfigMap |
 
 Values are checked against [`values.schema.json`](chart/roam-gate/values.schema.json) (unknown keys, enums, durations, sizes).

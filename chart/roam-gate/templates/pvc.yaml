@@ -1,4 +1,9 @@
 {{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) -}}
+{{- /* The size is set at install: an upgrade keeps the volume's size, so a new
+  default (or a smaller value) never asks to resize or shrink it. */ -}}
+{{- $old := lookup "v1" "PersistentVolumeClaim" .Release.Namespace (printf "%s-data" (include "gate.name" .)) -}}
+{{- $size := .Values.persistence.size -}}
+{{- if and $old $old.spec -}}{{- $size = $old.spec.resources.requests.storage -}}{{- end -}}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -17,5 +22,5 @@ spec:
   {{- end }}
   resources:
     requests:
-      storage: {{ .Values.persistence.size }}
+      storage: {{ $size }}
 {{- end }}

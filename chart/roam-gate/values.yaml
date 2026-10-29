@@ -31,7 +31,7 @@ audit:
   #         request. all: every request, reads included (much more storage).
   # Sign-ins, sessions and admin changes are always recorded.
   level: writes
-  retention: 90d
+  retention: 30d
 
 reconcileInterval: 2m
 
@@ -82,7 +82,8 @@ ingress:
 persistence:
   # SQLite database: providers, users, bindings, sessions and the audit trail.
   enabled: true
-  size: 2Gi
+  # Set at install; upgrades keep the volume's size.
+  size: 20Gi
   storageClass: ""
   accessMode: ReadWriteOnce
   existingClaim: ""

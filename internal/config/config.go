@@ -74,7 +74,7 @@ func duration(k string, def time.Duration) (time.Duration, error) {
 	if v == "" {
 		return def, nil
 	}
-	// Plain numbers of days read naturally for retention ("90d").
+	// Plain numbers of days read naturally for retention ("30d").
 	if strings.HasSuffix(v, "d") {
 		n, err := strconv.Atoi(strings.TrimSuffix(v, "d"))
 		if err != nil {
@@ -110,7 +110,7 @@ func Load() (*Config, error) {
 	if c.SessionTTL, err = duration("GATE_SESSION_TTL", 12*time.Hour); err != nil {
 		return nil, err
 	}
-	if c.AuditRetention, err = duration("GATE_AUDIT_RETENTION", 90*24*time.Hour); err != nil {
+	if c.AuditRetention, err = duration("GATE_AUDIT_RETENTION", 30*24*time.Hour); err != nil {
 		return nil, err
 	}
 	if c.ReconcileInterval, err = duration("GATE_RECONCILE_INTERVAL", 2*time.Minute); err != nil {
