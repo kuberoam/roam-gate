@@ -78,13 +78,15 @@ Register an OAuth app / client at the provider with the callback URL `https://<g
   "config": { "clientId": "…", "clientSecret": "…", "allowedOrgs": ["acme"] } }
 ```
 
-| Type | Config |
-| ---- | ------ |
-| `github` | `clientId`, `clientSecret`, `url` (GitHub Enterprise Server), `allowedOrgs` — groups: orgs and `org/team` |
-| `gitlab` | `issuer` (default `https://gitlab.com`, or your GitLab URL), `clientId`, `clientSecret` — groups: GitLab groups |
-| `google` | `clientId`, `clientSecret`, `allowedDomains` |
-| `oidc` | `issuer`, `clientId`, `clientSecret`, `scopes`, `usernameClaim`, `groupsClaim` |
-| `ldap` | `url`, `startTLS`, `bindDN`, `bindPassword`, `userBaseDN`, `userFilter` (default `(uid={username})`; AD: `(sAMAccountName={username})`), `groupBaseDN`, `groupFilter` (default `(member={dn})`), attribute names |
+| Type | Config | Scopes Gate asks for |
+| ---- | ------ | -------------------- |
+| `github` | `clientId`, `clientSecret`, `url` (GitHub Enterprise Server), `allowedOrgs` — groups: orgs and `org/team` | `read:user`, `user:email`, `read:org` (OAuth apps take any; an organization that restricts OAuth apps must approve it) |
+| `gitlab` | `issuer` (default `https://gitlab.com`, or your GitLab URL), `clientId`, `clientSecret` — groups: GitLab groups | `openid`, `profile`, `email` — tick exactly these on the GitLab application |
+| `google` | `clientId`, `clientSecret`, `allowedDomains` | `openid`, `profile`, `email` — Google sends no groups, so `allowedGroups` is refused |
+| `oidc` | `issuer`, `clientId`, `clientSecret`, `scopes`, `usernameClaim`, `groupsClaim` | `openid`, `profile`, `email`, plus `groups` when discovery offers it; `scopes` replaces the list (`openid` is always added) |
+| `ldap` | `url`, `startTLS`, `bindDN`, `bindPassword`, `userBaseDN`, `userFilter` (default `(uid={username})`; AD: `(sAMAccountName={username})`), `groupBaseDN`, `groupFilter` (default `(member={dn})`), attribute names | — |
+
+A scope the app or client at the provider doesn't allow stops sign-in with `invalid_scope`; *Test* in Roam (`POST /api/v1/providers/{id}/test`) lists the scopes Gate asks for and warns about configured ones the provider doesn't offer.
 
 Every provider also accepts `allowedDomains` (email domains) and `allowedGroups`. Secrets are encrypted at rest and never returned by the API.
 

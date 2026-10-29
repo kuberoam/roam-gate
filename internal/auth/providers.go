@@ -41,6 +41,17 @@ type Redirector interface {
 	Finish(ctx context.Context, r *http.Request, nonce, pkceVerifier string) (*identity.Identity, error)
 }
 
+// Scoped is a provider that asks for OAuth scopes: the app or client registered
+// at the provider must allow them.
+type Scoped interface {
+	Scopes() []string
+}
+
+// Warner reports settings that build but may fail at sign-in.
+type Warner interface {
+	Warnings() []error
+}
+
 // PasswordLogin signs in with a username and password (LDAP).
 type PasswordLogin interface {
 	Provider

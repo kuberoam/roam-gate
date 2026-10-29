@@ -54,6 +54,10 @@ func newGitHub(sp *store.Provider, c GitHubConfig, callbackURL string) (*gitHub,
 
 func (g *gitHub) Info() *store.Provider { return g.info }
 
+// Scopes are the scopes Gate asks GitHub for. OAuth apps take any; a GitHub
+// App ignores them and needs the matching permissions instead.
+func (g *gitHub) Scopes() []string { return g.oauth.Scopes }
+
 func (g *gitHub) AuthURL(state, _, verifier string) string {
 	return g.oauth.AuthCodeURL(state, oauth2.S256ChallengeOption(verifier))
 }

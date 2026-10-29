@@ -190,6 +190,15 @@ func (s *Server) testProvider(w http.ResponseWriter, r *http.Request, _ *auth.Pr
 		writeJSON(w, http.StatusOK, testResult{Error: msg.Localize(lang, err)})
 		return
 	}
+	res := testResult{OK: true}
+	if sc, ok := p.(auth.Scoped); ok {
+		res.Scopes = sc.Scopes()
+	}
+	if wr, ok := p.(auth.Warner); ok {
+		for _, w := range wr.Warnings() {
+			res.Warnings = append(res.Warnings, msg.Localize(lang, w))
+		}
+	}
 	var body struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
@@ -204,7 +213,7 @@ func (s *Server) testProvider(w http.ResponseWriter, r *http.Request, _ *auth.Pr
 		writeJSON(w, http.StatusOK, testResult{OK: true, User: id.UserID(), Groups: id.GroupIDs()})
 		return
 	}
-	writeJSON(w, http.StatusOK, testResult{OK: true})
+	writeJSON(w, http.StatusOK, res)
 }
 
 type testResult struct {
@@ -212,6 +221,9 @@ type testResult struct {
 	Error  string   `json:"error,omitempty"`
 	User   string   `json:"user,omitempty"`
 	Groups []string `json:"groups,omitempty"`
+	// Scopes Gate asks for: the app or client at the provider must allow them.
+	Scopes   []string `json:"scopes,omitempty"`
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // -------------------------------------------------------------------- users
