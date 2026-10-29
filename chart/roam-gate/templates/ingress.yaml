@@ -1,4 +1,32 @@
 {{- if .Values.ingress.enabled -}}
+{{- /*
+  An Ingress no controller picks up installs fine and then answers 404, so check
+  the class against the cluster. lookup is empty without a cluster (helm template,
+  client dry-run): nothing to check then.
+*/ -}}
+{{- $found := lookup "networking.k8s.io/v1" "IngressClass" "" "" -}}
+{{- $legacy := hasKey .Values.ingress.annotations "kubernetes.io/ingress.class" -}}
+{{- if and .Values.ingress.checkClass (not $legacy) (hasKey $found "items") -}}
+{{- $names := list -}}
+{{- $default := "" -}}
+{{- range $found.items -}}
+{{- $names = append $names .metadata.name -}}
+{{- if eq (get (.metadata.annotations | default dict) "ingressclass.kubernetes.io/is-default-class") "true" -}}
+{{- $default = .metadata.name -}}
+{{- end -}}
+{{- end -}}
+{{- $known := printf "it has: %s" (join ", " $names) -}}
+{{- $escape := "set ingress.checkClass=false if your controller also serves Ingresses without a class" -}}
+{{- if empty $names -}}
+{{- fail (printf "the cluster has no IngressClass, so no Ingress controller would serve Gate's Ingress and %s would answer 404. Install an Ingress controller, expose Gate with service.type=LoadBalancer, or %s." .Values.ingress.host $escape) -}}
+{{- else if not .Values.ingress.className -}}
+{{- if not $default -}}
+{{- fail (printf "ingress.className is empty and the cluster has no default IngressClass (%s), so no controller would serve Gate's Ingress and %s would answer 404. Set ingress.className, or %s." $known .Values.ingress.host $escape) -}}
+{{- end -}}
+{{- else if not (has .Values.ingress.className $names) -}}
+{{- fail (printf "ingress.className %q is not an IngressClass in this cluster (%s), so no controller would serve Gate's Ingress. Set ingress.className to one of them, or %s." .Values.ingress.className $known $escape) -}}
+{{- end -}}
+{{- end -}}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

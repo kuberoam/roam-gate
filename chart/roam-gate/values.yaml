@@ -56,7 +56,12 @@ service:
 
 ingress:
   enabled: false
+  # Empty: the cluster's default IngressClass.
   className: ""
+  # Fail the install when no IngressClass would serve the Ingress: className is
+  # empty and the cluster has no default class, or className doesn't exist.
+  # Turn off for controllers that serve Ingresses without a class.
+  checkClass: true
   host: ""
   annotations: {}
   # TLS Secret for the Ingress (e.g. created by cert-manager via annotations).

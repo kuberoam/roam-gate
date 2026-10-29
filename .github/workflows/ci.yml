@@ -20,3 +20,6 @@ jobs:
           helm lint chart/roam-gate
           helm template t chart/roam-gate -n roam-system > /dev/null
           helm template t chart/roam-gate -n roam-system --set tls.mode=none,ingress.enabled=true,ingress.host=gate.example.com,eks.awsAuth=true > /dev/null
+          # The schema rejects bad values.
+          ! helm template t chart/roam-gate --set tls.mode=bogus > /dev/null 2>&1
+          ! helm template t chart/roam-gate --set ingress.enabled=true > /dev/null 2>&1

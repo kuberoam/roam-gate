@@ -45,6 +45,7 @@ Common settings (see [`values.yaml`](chart/roam-gate/values.yaml)):
 | ----- | ------- | - |
 | `externalURL` | `https://<ingress.host>` or `https://localhost:8443` | How people reach Gate (sign-in pages, kubeconfigs) |
 | `ingress.enabled`, `ingress.host`, `ingress.className`, `ingress.tlsSecretName` | off | Expose Gate through an Ingress |
+| `ingress.checkClass` | `true` | Fail the install when no IngressClass would serve the Ingress (no `className` and no default class, or a class the cluster doesn't have) |
 | `service.type` | `ClusterIP` | `LoadBalancer` to expose it directly |
 | `tls.mode` | `selfSigned` | `selfSigned` (CA embedded in kubeconfigs), `secret` (e.g. cert-manager), `none` (TLS at the Ingress) |
 | `admins.users` / `admins.groups` | – | Who may administer Gate after SSO is set up |
@@ -53,6 +54,8 @@ Common settings (see [`values.yaml`](chart/roam-gate/values.yaml)):
 | `session.ttl` | `12h` | Session lifetime |
 | `persistence.size` | `2Gi` | The database, audit trail included; kept on uninstall (`persistence.keep`) |
 | `eks.awsAuth` | `false` | Allow Gate to add its own entries to the `aws-auth` ConfigMap |
+
+Values are checked against [`values.schema.json`](chart/roam-gate/values.schema.json) (unknown keys, enums, durations, sizes).
 
 Without an Ingress or LoadBalancer, reach Gate with `kubectl -n roam-system port-forward svc/roam-gate 8443:443`.
 
