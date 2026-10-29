@@ -125,7 +125,7 @@ curl -X POST https://gate.example.com/api/v1/login-requests/<id>/collect -d '{"p
 
 The code only ever reaches the computer where the person signs in, so sending someone a sign-in link can't hand their session to whoever started the request.
 
-Or open `https://<gate>/login` in a browser and download a ready-made kubeconfig.
+Or open `https://<gate>/login` in a browser. After signing in, *Open in Roam* hands the session to the Roam desktop app (`roam://gate/signin`, a one-time code that works for 10 minutes): Roam adds the cluster — asking first for a Gate it doesn't know yet — or signs in to it again. A browser that opened Roam once opens it by itself after later sign-ins. The page always offers the kubeconfig download too. When Gate's certificate isn't publicly trusted, the link carries the SHA-256 of its CA and Roam pins `GET /ca.crt` against it.
 
 ## API
 

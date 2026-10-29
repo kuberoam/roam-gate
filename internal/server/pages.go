@@ -15,7 +15,7 @@ import (
 
 var pageTmpl = template.Must(template.New("page").Parse(`<!doctype html>
 <html lang="{{.Lang}}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{{.Title}} · Roam Gate</title>
+<title>{{.Title}} · Roam Gate</title>{{.Head}}
 <style>
 :root{color-scheme:light dark;--bg:#0f172a;--card:#1e293b;--line:#334155;--text:#f8fafc;--muted:#94a3b8;--accent:#22c55e;--red:#f87171}
 @media (prefers-color-scheme:light){:root{--bg:#f1f5f9;--card:#fff;--line:#e2e8f0;--text:#0f172a;--muted:#475569}}
@@ -40,8 +40,13 @@ func viewFor(r *http.Request) view { return view{msg.Lang(r)} }
 func (v view) T(code string, kv ...string) string { return msg.T(v.lang, msg.Code(code), kv...) }
 
 func (s *Server) page(w http.ResponseWriter, v view, code int, title msg.Code, body template.HTML) {
+	s.pageHead(w, v, code, title, "", body)
+}
+
+// pageHead is page with extra elements in <head>.
+func (s *Server) pageHead(w http.ResponseWriter, v view, code int, title msg.Code, head, body template.HTML) {
 	var buf bytes.Buffer
-	if err := pageTmpl.Execute(&buf, map[string]any{"Lang": v.lang, "Title": v.T(string(title)), "Body": body}); err != nil {
+	if err := pageTmpl.Execute(&buf, map[string]any{"Lang": v.lang, "Title": v.T(string(title)), "Head": head, "Body": body}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -84,11 +89,25 @@ func errorBody(v view, err error) template.HTML {
 
 var kubeconfigTmpl = template.Must(template.New("kubeconfig").Parse(`<h1>{{call .T "page.signedInHeading"}}</h1>
 <p>{{call .T "page.signedInAs" "user" .User}} {{call .T "page.accessUntil" "expires" .Expires}}</p>
-<a class="btn primary" download="kubeconfig-roam-gate.yaml" href="{{.Href}}">{{call .T "page.download"}}</a>
+{{if .Link}}{{if .Auto}}<p>{{call .T "page.openingRoam"}}</p>{{end}}
+<form method="post" action="/open-roam"><input type="hidden" name="link" value="{{.Link}}"><button class="primary" type="submit">{{call .T "page.openRoam"}}</button></form>
+<p class="small">{{call .T "page.openRoamHint"}}</p>{{end}}
+<a class="btn{{if not .Link}} primary{{end}}" download="kubeconfig-roam-gate.yaml" href="{{.Href}}">{{call .T "page.download"}}</a>
 <details><summary>{{call .T "page.showKubeconfig"}}</summary><pre>{{.YAML}}</pre></details>
 <p class="small">{{call .T "page.kubeconfigHint"}}</p>`))
 
-func kubeconfigBody(v view, user string, expires time.Time, yaml string) template.HTML {
+// kubeconfigBody shows the kubeconfig and, with a roam:// link, a button that
+// hands the session to Roam (auto: Roam is opening by itself).
+func kubeconfigBody(v view, user string, expires time.Time, yaml, link string, auto bool) template.HTML {
 	href := template.URL("data:application/yaml;base64," + base64.StdEncoding.EncodeToString([]byte(yaml))) //nolint:gosec // our own content
-	return render(kubeconfigTmpl, map[string]any{"T": v.T, "User": user, "Expires": expires.UTC().Format("2006-01-02 15:04 UTC"), "YAML": yaml, "Href": href})
+	return render(kubeconfigTmpl, map[string]any{"T": v.T, "User": user, "Expires": expires.UTC().Format("2006-01-02 15:04 UTC"), "YAML": yaml, "Href": href,
+		"Link": link, "Auto": auto})
+}
+
+// roamRefresh opens the roam:// link as soon as the page loads (no JavaScript).
+func roamRefresh(link string, auto bool) template.HTML {
+	if !auto {
+		return ""
+	}
+	return template.HTML(`<meta http-equiv="refresh" content="0;url=` + template.HTMLEscapeString(link) + `">`) //nolint:gosec // escaped, our own link
 }

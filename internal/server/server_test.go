@@ -205,6 +205,55 @@ func TestSignInProxyAndAudit(t *testing.T) {
 	}
 	token := col.Token
 
+	// Signing in straight in the browser hands the session to Roam through a
+	// roam:// link; the button remembers that this browser has Roam, so the
+	// next sign-in opens it by itself.
+	signedInPage := func() string {
+		t.Helper()
+		resp, err := browser.Get(gate.URL + "/auth/mock/start")
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return string(b)
+	}
+	page1 := signedInPage()
+	if strings.Contains(page1, `http-equiv="refresh"`) {
+		t.Fatal("Roam must not open by itself before this browser opened it once")
+	}
+	start := strings.Index(page1, `name="link" value="`)
+	if start < 0 {
+		t.Fatalf("no Open in Roam: %s", page1)
+	}
+	rest := page1[start+len(`name="link" value="`):]
+	link := strings.ReplaceAll(rest[:strings.Index(rest, `"`)], "&amp;", "&")
+	lu, _ := url.Parse(link)
+	if lu.Scheme != "roam" || lu.Host != "gate" || lu.Path != "/signin" || lu.Query().Get("server") != cfg.ExternalURL {
+		t.Fatalf("link: %s", link)
+	}
+	noFollow := &http.Client{Jar: jar, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	if resp, err := noFollow.PostForm(gate.URL+"/open-roam", url.Values{"link": {"https://evil.example/"}}); err != nil || resp.StatusCode != 400 {
+		t.Fatalf("open-roam with another link: %v %v", err, resp)
+	}
+	resp, err = noFollow.PostForm(gate.URL+"/open-roam", url.Values{"link": {link}})
+	if err != nil || resp.StatusCode != http.StatusSeeOther || resp.Header.Get("Location") != link {
+		t.Fatalf("open-roam: %v %v", err, resp)
+	}
+	q := lu.Query()
+	_, b = call("POST", "/api/v1/login-requests/"+q.Get("req")+"/collect", "", `{"pollSecret":"`+q.Get("secret")+`","code":"`+q.Get("code")+`"}`)
+	var handed struct{ State, Token string }
+	json.Unmarshal(b, &handed)
+	if handed.State != store.LoginDone || !strings.Contains(page1, handed.Token) {
+		t.Fatalf("Roam gets the session the page shows: %s", b)
+	}
+	if resp, _ := call("POST", "/api/v1/login-requests/"+q.Get("req")+"/collect", "", `{"pollSecret":"`+q.Get("secret")+`","code":"`+q.Get("code")+`"}`); resp.StatusCode == 200 {
+		t.Fatal("the link works once")
+	}
+	if page2 := signedInPage(); !strings.Contains(page2, `<meta http-equiv="refresh" content="0;url=roam://gate/signin?`) {
+		t.Fatalf("Roam should open by itself now: %s", page2)
+	}
+
 	_, b = call("GET", "/api/v1/me", token, "")
 	var me struct {
 		User   string

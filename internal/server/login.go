@@ -241,7 +241,10 @@ func (s *Server) completeLogin(w http.ResponseWriter, r *http.Request, providerI
 		}
 		// The app stopped waiting; fall back to showing the kubeconfig.
 	}
-	s.page(w, v, http.StatusOK, msg.PageTitleSignedIn, kubeconfigBody(v, sess.User, sess.Expires, s.kubeconfigYAML(sess, token)))
+	link := s.roamLink(r.Context(), token)
+	auto := link != "" && opensRoam(r)
+	s.pageHead(w, v, http.StatusOK, msg.PageTitleSignedIn, roamRefresh(link, auto),
+		kubeconfigBody(v, sess.User, sess.Expires, s.kubeconfigYAML(sess, token), link, auto))
 }
 
 // returnTo is the app's loopback address with the request ID and the one-time code.

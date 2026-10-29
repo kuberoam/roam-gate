@@ -99,6 +99,9 @@ const (
 	PageDownload         Code = "page.download"
 	PageShowKubeconfig   Code = "page.showKubeconfig"
 	PageKubeconfigHint   Code = "page.kubeconfigHint"
+	PageOpenRoam         Code = "page.openRoam"
+	PageOpeningRoam      Code = "page.openingRoam"
+	PageOpenRoamHint     Code = "page.openRoamHint"
 	PageReturnToApp      Code = "page.returnToApp"
 	PageAppRequest       Code = "page.appRequest"
 )

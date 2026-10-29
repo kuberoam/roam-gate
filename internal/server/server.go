@@ -69,6 +69,8 @@ func New(d Deps) *Server {
 	m.HandleFunc("GET /auth/{provider}/start", s.authStart)
 	m.HandleFunc("GET /auth/{provider}/callback", s.authCallback)
 	m.HandleFunc("POST /auth/{provider}/login", s.passwordLogin)
+	m.HandleFunc("POST /open-roam", s.openRoam)
+	m.HandleFunc("GET /ca.crt", s.caCert)
 
 	// Public API.
 	m.HandleFunc("GET /api/v1/info", s.info)
@@ -108,7 +110,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("X-Frame-Options", "DENY")
-		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' https:; frame-ancestors 'none'")
+		h.Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' https: roam:; frame-ancestors 'none'")
 	}
 	s.mux.ServeHTTP(w, r)
 }
