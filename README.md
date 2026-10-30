@@ -96,6 +96,12 @@ A scope the app or client at the provider doesn't allow stops sign-in with `inva
 
 Every provider also accepts `allowedDomains` (email domains) and `allowedGroups`. Secrets are encrypted at rest and never returned by the API.
 
+## Sessions
+
+A session lasts `GATE_SESSION_TTL` (12 hours by default). It isn't extended behind your back: when it ends, people sign in again. Roam warns 15 minutes before, and opens `/login?app=1`, which goes straight to the provider when there is only one and back to Roam by itself, so with a live provider session it takes one tap.
+
+When a session expires, or is revoked (by an admin, by disabling the user, or by removing their sign-in method), Gate also ends what it has open: watches, log streams and `exec` / `port-forward` connections, within 5 seconds of a revocation.
+
 ## Bindings
 
 ```json

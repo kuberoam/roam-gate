@@ -198,6 +198,9 @@ func TestSignInProxyAndAudit(t *testing.T) {
 		t.Fatalf("collect without the code: %d", resp.StatusCode)
 	}
 	_, b = call("POST", "/api/v1/login-requests/"+lr.ID+"/collect", "", `{"pollSecret":"`+lr.PollSecret+`","code":"`+code+`"}`)
+	if !strings.Contains(string(b), `"user":"alice@corp.com"`) || !strings.Contains(string(b), `"expires":"`) {
+		t.Fatalf("collect says who and until when: %s", b)
+	}
 	var col struct{ State, Token string }
 	json.Unmarshal(b, &col)
 	if col.State != store.LoginDone || !strings.HasPrefix(col.Token, auth.TokenPrefix) {
@@ -375,5 +378,49 @@ func TestSignInProxyAndAudit(t *testing.T) {
 	}
 	if resp, _ := call("GET", "/k8s/api/v1/pods", "rg_other", ""); resp.StatusCode != 401 {
 		t.Fatalf("after deleting the provider: %d", resp.StatusCode)
+	}
+}
+
+// Roam opens /login?app=1 itself: with one way to sign in there's nothing to
+// choose, and the page after it opens Roam without another tap.
+func TestLoginFromTheApp(t *testing.T) {
+	st, err := store.Open(t.TempDir(), make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+	st.SaveProvider(ctx, &store.Provider{ID: "corp", Type: "ldap", Name: "Corp", Enabled: true})
+	cfg := &config.Config{ExternalURL: "http://gate.test", SecretKey: make([]byte, 32), ClusterName: "t", AdminToken: "a", SessionTTL: time.Hour, AuditLevel: config.AuditWrites}
+	rec := audit.New(st, nil)
+	defer rec.Close()
+	sessions := auth.NewSessions(st, cfg.SessionTTL, cfg.AdminToken, nil, nil)
+	px, err := proxy.New("http://127.0.0.1:1", http.DefaultTransport, sessions, rec, cfg.AuditLevel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := fake.NewSimpleClientset()
+	kc := &kube.Client{Config: &rest.Config{Host: "http://127.0.0.1:1"}, RBAC: cs.RbacV1(), Core: cs.CoreV1()}
+	h := New(Deps{Config: cfg, Store: st, Kube: kc, Recorder: rec, Sessions: sessions, Policy: policy.New(kc, st, time.Minute, cfg.ExternalURL), Proxy: px})
+	get := func(path string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		return w
+	}
+	// A password sign-in has its form to show, but the browser is remembered.
+	w := get("/login?app=1")
+	if w.Code != 200 || !strings.Contains(w.Header().Get("Set-Cookie"), roamCookie) {
+		t.Fatalf("password provider: %d %v", w.Code, w.Header())
+	}
+	if w := get("/login"); strings.Contains(w.Header().Get("Set-Cookie"), roamCookie) {
+		t.Fatal("a plain visit doesn't say the browser has Roam")
+	}
+	st.SaveProvider(ctx, &store.Provider{ID: "corp", Type: "oidc", Name: "Corp", Enabled: true})
+	if w := get("/login?app=1"); w.Code != http.StatusFound || w.Header().Get("Location") != "/auth/corp/start" {
+		t.Fatalf("one provider: %d %q", w.Code, w.Header().Get("Location"))
+	}
+	st.SaveProvider(ctx, &store.Provider{ID: "other", Type: "oidc", Name: "Other", Enabled: true})
+	if w := get("/login?app=1"); w.Code != 200 {
+		t.Fatalf("a choice to make: %d", w.Code)
 	}
 }

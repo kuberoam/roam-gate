@@ -70,10 +70,14 @@ func (s *Server) openRoam(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not a Roam sign-in link", http.StatusBadRequest)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: roamCookie, Value: "1", Path: "/", MaxAge: 365 * 24 * 3600, HttpOnly: true,
-		Secure: strings.HasPrefix(s.cfg.ExternalURL, "https://"), SameSite: http.SameSiteLaxMode})
+	s.rememberRoam(w)
 	w.Header().Set("Cache-Control", "no-store")
 	http.Redirect(w, r, link, http.StatusSeeOther)
+}
+
+func (s *Server) rememberRoam(w http.ResponseWriter) {
+	http.SetCookie(w, &http.Cookie{Name: roamCookie, Value: "1", Path: "/", MaxAge: 365 * 24 * 3600, HttpOnly: true,
+		Secure: strings.HasPrefix(s.cfg.ExternalURL, "https://"), SameSite: http.SameSiteLaxMode})
 }
 
 // opensRoam reports whether this browser opened Roam before.

@@ -73,6 +73,7 @@ func run() error {
 		close(rcDone)
 	}()
 	go prune(ctx, st, cfg.AuditRetention)
+	go px.Run(ctx)
 
 	var caPEM []byte
 	if cfg.CAFile != "" {

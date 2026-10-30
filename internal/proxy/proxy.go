@@ -5,6 +5,7 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net"
@@ -32,6 +33,7 @@ const ExtraSession = "roam-gate-session"
 // Sessions resolves bearer tokens.
 type Sessions interface {
 	Authenticate(r *http.Request) (*store.Session, error)
+	Live(ctx context.Context, sessionID string) bool
 }
 
 type Proxy struct {
@@ -39,6 +41,7 @@ type Proxy struct {
 	sessions Sessions
 	rec      *audit.Recorder
 	level    config.AuditLevel
+	open     streams
 }
 
 // New proxies to apiServer through transport (which authenticates as Gate).
@@ -139,6 +142,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusUnauthorized, msg.T(msg.Lang(r), msg.NotSignedIn))
 		return
 	}
+
+	// Nothing outlives the session that opened it (streams.go).
+	ctx, cancel := context.WithDeadline(r.Context(), sess.Expires)
+	defer cancel()
+	defer p.open.remove(p.open.add(sess.ID, cancel))
+	r = r.WithContext(ctx)
 
 	// Never let a client impersonate on its own or reuse its Gate token upstream.
 	for k := range r.Header {

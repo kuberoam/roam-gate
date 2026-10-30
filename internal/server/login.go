@@ -104,6 +104,16 @@ func (s *Server) loginPage(w http.ResponseWriter, r *http.Request) {
 		s.page(w, v, http.StatusInternalServerError, msg.PageTitleError, errorBody(v, err))
 		return
 	}
+	// Roam opened this page itself (?app=1, to sign in or sign in again):
+	// the browser has Roam, and with one way to sign in there's nothing to
+	// choose. With the provider's own session that is a single tap.
+	if r.URL.Query().Get("app") == "1" {
+		s.rememberRoam(w)
+		if len(ps) == 1 && !ps[0].Password {
+			http.Redirect(w, r, "/auth/"+url.PathEscape(ps[0].ID)+"/start", http.StatusFound)
+			return
+		}
+	}
 	s.page(w, v, http.StatusOK, msg.PageTitleSignIn, loginBody(v, ps, s.pendingRequest(r, r.URL.Query().Get("req")), s.signer.Sign(strconv.FormatInt(time.Now().Unix(), 10))))
 }
 
@@ -311,7 +321,14 @@ func (s *Server) collectLoginRequest(w http.ResponseWriter, r *http.Request) {
 		fail(w, r, 0, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"state": state, "token": token, "error": failure})
+	out := map[string]any{"state": state, "token": token, "error": failure}
+	// Who signed in and until when: apps show it, and warn before it ends.
+	if token != "" {
+		if sess, err := s.st.SessionByToken(r.Context(), token); err == nil {
+			out["user"], out["expires"] = sess.User, sess.Expires
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 // ------------------------------------------------------------ rate limiting

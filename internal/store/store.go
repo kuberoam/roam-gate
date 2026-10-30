@@ -353,6 +353,20 @@ func (s *Store) SessionByToken(ctx context.Context, token string) (*Session, err
 	return x, nil
 }
 
+// SessionLive reports whether a session exists, isn't revoked and hasn't expired.
+func (s *Store) SessionLive(ctx context.Context, id string) (bool, error) {
+	var revoked bool
+	var exp int64
+	err := s.db.QueryRowContext(ctx, `SELECT revoked, expires FROM sessions WHERE id = ?`, id).Scan(&revoked, &exp)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return !revoked && time.Now().Before(fromMs(exp)), nil
+}
+
 // TouchSession notes use; called at most once a minute per session.
 func (s *Store) TouchSession(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE sessions SET last_used = ? WHERE id = ?`, ms(time.Now()), id)

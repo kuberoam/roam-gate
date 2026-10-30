@@ -92,6 +92,13 @@ func (s *Sessions) Authenticate(r *http.Request) (*store.Session, error) {
 	return sess, nil
 }
 
+// Live reports whether a session can still be used. If the database can't be
+// read it says yes: a hiccup must not cut everyone's open connections.
+func (s *Sessions) Live(ctx context.Context, sessionID string) bool {
+	live, err := s.st.SessionLive(ctx, sessionID)
+	return err != nil || live
+}
+
 // Principal is whoever calls Gate's API: a session, or the bootstrap admin.
 type Principal struct {
 	Session *store.Session // nil for the bootstrap admin
