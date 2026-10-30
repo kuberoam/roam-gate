@@ -1,0 +1,13 @@
+{{- /*
+One Roam Gate per cluster. A Gate already installed under another release
+(found by its ClusterRole, which every Gate has) stops this install: a second
+Gate would only stand by (its cluster lock) and confuse people. Lookups return
+nothing under `helm template` / --dry-run, so those still render.
+*/ -}}
+{{- range (lookup "rbac.authorization.k8s.io/v1" "ClusterRole" "" "").items | default list }}
+{{- $l := .metadata.labels | default dict }}
+{{- $a := .metadata.annotations | default dict }}
+{{- if and (eq (get $l "app.kubernetes.io/name") "roam-gate") (or (ne (get $l "app.kubernetes.io/instance") $.Release.Name) (ne (get $a "meta.helm.sh/release-namespace") $.Release.Namespace)) }}
+{{- fail (printf "Roam Gate is already installed in this cluster (release %s in namespace %s). One Gate manages a cluster: upgrade that release instead of installing another." (get $l "app.kubernetes.io/instance") (get $a "meta.helm.sh/release-namespace")) }}
+{{- end }}
+{{- end }}

@@ -68,6 +68,8 @@ var vi = map[Code]string{
 	AWSAuthInvalid:     "aws-auth không phải YAML hợp lệ nên Gate không động vào: {error}",
 	AWSAuthUpdate:      "Không cập nhật được aws-auth: {error}",
 	RBACListFailed:     "Không liệt kê được {what}: {error}",
+	LockHeld:           "Một Roam Gate khác ({holder}) đang quản lý quyền truy cập của cluster này, nên Gate này không thay đổi gì. Mỗi cluster chỉ nên có một Gate: gỡ Gate kia hoặc Gate này. Gate này tự tiếp quản {ttl} sau khi Gate kia dừng.",
+	LockFailed:         "Không giành được quyền quản lý cluster cho Gate này: {error}",
 
 	PageTitleSignIn:      "Đăng nhập",
 	PageTitleError:       "Roam Gate",

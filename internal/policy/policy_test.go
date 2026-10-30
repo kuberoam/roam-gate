@@ -37,7 +37,7 @@ func setup(t *testing.T, objs ...any) (*Reconciler, *store.Store, *fake.Clientse
 		}
 	}
 	kc := &kube.Client{RBAC: cs.RbacV1(), Core: cs.CoreV1(), WatchListSemantics: cs}
-	return New(kc, st, time.Minute), st, cs
+	return New(kc, st, time.Minute, "https://gate.test"), st, cs
 }
 
 func TestReconcileCreatesRepairsAndCleansUp(t *testing.T) {

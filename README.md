@@ -24,7 +24,7 @@ Roam Gate is the access-control service behind [Roam](https://github.com/kuberoa
 
 1. People sign in with SSO. Gate issues a session token (`rg_…`) and a kubeconfig whose server is `https://<gate>/k8s`; its context is named `<clusterName>-roam-gate`, so merging it into `~/.kube/config` doesn't clash with a context people already have for the same cluster.
 2. Gate authenticates each request and forwards it to the API server as the person, using impersonation: user `roam:<id>`, groups `roam:<provider>:<group>` and `roam:authenticated`. Anything the client sends to impersonate someone else is dropped.
-3. The API server's own RBAC decides. Gate turns its *bindings* ("group `github:acme/devs` gets `edit` in `staging`") into RoleBindings / ClusterRoleBindings labelled `kuberoam.dev/managed-by=roam-gate`, and keeps them in shape: it watches only its own objects (by label), so an edit by hand or a deletion is undone within a second; deleting a binding removes its objects; nothing else is touched.
+3. The API server's own RBAC decides. Gate turns its *bindings* ("group `github:acme/devs` gets `edit` in `staging`") into RoleBindings / ClusterRoleBindings labelled `kuberoam.dev/managed-by=roam-gate`, and keeps them in shape: it watches only its own objects (by label), so an edit by hand or a deletion is undone within a second; deleting a binding removes its objects; nothing else is touched (see [One Gate per cluster](#one-gate-per-cluster)).
 4. Every request worth investigating is recorded, together with sign-ins, session revocations and admin changes (with before/after).
 
 Identity naming: a user is their verified email (lowercase), or `<provider>:<login>` when there is none. Groups are `<provider>:<group>` — e.g. `github:acme` (org), `github:acme/platform` (team), `gitlab:infra/sre`, `ldap:k8s-admins`.
@@ -70,6 +70,10 @@ kubectl -n roam-system get secret roam-gate-secrets -o jsonpath='{.data.admin-to
 ### What Gate may do in your cluster
 
 Gate's ClusterRole lets it **impersonate** users and groups, **manage RoleBindings / ClusterRoleBindings** and **bind ClusterRoles**, and list namespaces and ClusterRoles. That is powerful — whoever administers Gate can grant any role — so protect the admin token and choose `admins.*` carefully. Gate only ever changes bindings it created.
+
+### One Gate per cluster
+
+A cluster has one Roam Gate. Installing a second release fails (the chart finds the first Gate's ClusterRole), and Roam refuses to install one either. If a second Gate runs anyway, it stands by: Gate holds the cluster through the ClusterRoleBinding `roam-gate-lock` (it binds nothing to nobody, so it grants nothing), renewed every reconcile. A Gate that finds the lock held by another Gate changes nothing and says so on its status (`reconcileError`); it takes over when the lock goes unrenewed for its TTL (5 minutes, or 3 reconcile intervals), and at once when the other Gate shuts down, which gives the lock up. Every object a Gate creates also carries its instance ID (`kuberoam.dev/gate-instance`, in `aws-auth` an extra group `kuberoam.dev/gate-instance:<id>`), and a Gate deletes only its own — objects from before 0.2.4 are adopted when they belong to one of its bindings. Gates before 0.2.4 have neither guard: two of them on one cluster delete each other's RoleBindings, so access flickers between allowed and 403. Upgrade, then uninstall the extra one.
 
 ## Sign-in providers
 

@@ -1,10 +1,12 @@
 // Package policy turns Gate's bindings into Kubernetes RBAC, and keeps it so.
 //
 // Each binding becomes a ClusterRoleBinding (cluster scope) or one
-// RoleBinding per namespace, labelled kuberoam.dev/managed-by=roam-gate. A
-// reconcile creates what is missing, repairs what was edited by hand, and
-// deletes Gate objects no binding asks for. Objects without the label are
-// never touched.
+// RoleBinding per namespace, labelled kuberoam.dev/managed-by=roam-gate and
+// with this Gate's instance ID. A reconcile creates what is missing, repairs
+// what was edited by hand, and deletes this Gate's objects no binding asks
+// for. Objects without the label, or made by another Gate, are never
+// deleted; one made before instance IDs existed is adopted when it belongs
+// to one of this Gate's bindings. Only one Gate acts at a time (lock.go).
 package policy
 
 import (
@@ -58,6 +60,7 @@ type Reconciler struct {
 	kc       *kube.Client
 	st       *store.Store
 	interval time.Duration
+	self     string // Gate's external URL, shown to a second Gate (lock.go)
 	kick     chan struct{}
 
 	mu      sync.Mutex
@@ -66,8 +69,8 @@ type Reconciler struct {
 	lastErr string
 }
 
-func New(kc *kube.Client, st *store.Store, interval time.Duration) *Reconciler {
-	return &Reconciler{kc: kc, st: st, interval: interval, kick: make(chan struct{}, 1), status: map[string]Status{}}
+func New(kc *kube.Client, st *store.Store, interval time.Duration, self string) *Reconciler {
+	return &Reconciler{kc: kc, st: st, interval: interval, self: self, kick: make(chan struct{}, 1), status: map[string]Status{}}
 }
 
 // Trigger asks for a reconcile soon (after a binding changed).
@@ -88,6 +91,11 @@ func (r *Reconciler) Run(ctx context.Context) {
 	r.watch(ctx)
 	t := time.NewTicker(r.interval)
 	defer t.Stop()
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		r.release(ctx)
+	}()
 	for {
 		if err := r.Reconcile(ctx); err != nil && ctx.Err() == nil {
 			slog.Error("reconcile failed", "err", err)
@@ -269,14 +277,14 @@ func checkSubject(b *store.Binding) error {
 	return nil
 }
 
-func meta(b *store.Binding, name, ns string) metav1.ObjectMeta {
+func meta(b *store.Binding, instance, name, ns string) metav1.ObjectMeta {
 	annos := map[string]string{kube.AnnoSubject: b.SubjectKind + ":" + b.Subject}
 	if b.Note != "" {
 		annos[kube.AnnoNote] = b.Note
 	}
 	return metav1.ObjectMeta{
 		Name: name, Namespace: ns, Annotations: annos,
-		Labels: map[string]string{kube.LabelManagedBy: kube.ManagedBy, kube.LabelBinding: b.ID, "app.kubernetes.io/part-of": "roam"},
+		Labels: map[string]string{kube.LabelManagedBy: kube.ManagedBy, kube.LabelBinding: b.ID, kube.LabelInstance: instance, "app.kubernetes.io/part-of": "roam"},
 	}
 }
 
@@ -298,6 +306,14 @@ func sameMeta(a, b metav1.ObjectMeta) bool {
 func (r *Reconciler) Reconcile(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
+	// Only the Gate holding the cluster lock touches RBAC (lock.go).
+	if err := r.claim(ctx, time.Now()); err != nil {
+		return r.fail(err)
+	}
+	instance, err := r.st.InstanceID(ctx)
+	if err != nil {
+		return r.fail(err)
+	}
 	bindings, err := r.st.Bindings(ctx)
 	if err != nil {
 		return err
@@ -327,13 +343,13 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 		ref := rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: b.Role}
 		name := ObjectPrefix + b.ID
 		if b.Scope == store.ScopeCluster {
-			wantCRB[name] = &rbacv1.ClusterRoleBinding{ObjectMeta: meta(b, name, ""), RoleRef: ref, Subjects: []rbacv1.Subject{subj}}
+			wantCRB[name] = &rbacv1.ClusterRoleBinding{ObjectMeta: meta(b, instance, name, ""), RoleRef: ref, Subjects: []rbacv1.Subject{subj}}
 			owner["crb/"+name] = b.ID
 			continue
 		}
 		for _, ns := range b.Namespaces {
 			key := ns + "/" + name
-			wantRB[key] = &rbacv1.RoleBinding{ObjectMeta: meta(b, name, ns), RoleRef: ref, Subjects: []rbacv1.Subject{subj}}
+			wantRB[key] = &rbacv1.RoleBinding{ObjectMeta: meta(b, instance, name, ns), RoleRef: ref, Subjects: []rbacv1.Subject{subj}}
 			owner["rb/"+key] = b.ID
 		}
 	}
@@ -344,7 +360,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 		return r.fail(msg.Wrap(msg.RBACListFailed, err, "what", "ClusterRoleBindings"))
 	}
 	crbAPI := r.kc.RBAC.ClusterRoleBindings()
-	syncObjects(ctx, "ClusterRoleBinding", "crb/", crbs.Items, wantCRB, owner, note, rbacOps[rbacv1.ClusterRoleBinding]{
+	syncObjects(ctx, instance, "ClusterRoleBinding", "crb/", crbs.Items, wantCRB, owner, note, rbacOps[rbacv1.ClusterRoleBinding]{
 		key:      func(o *rbacv1.ClusterRoleBinding) string { return o.Name },
 		meta:     func(o *rbacv1.ClusterRoleBinding) *metav1.ObjectMeta { return &o.ObjectMeta },
 		roleRef:  func(o *rbacv1.ClusterRoleBinding) rbacv1.RoleRef { return o.RoleRef },
@@ -366,7 +382,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 	if err != nil {
 		return r.fail(msg.Wrap(msg.RBACListFailed, err, "what", "RoleBindings"))
 	}
-	syncObjects(ctx, "RoleBinding", "rb/", rbs.Items, wantRB, owner, note, rbacOps[rbacv1.RoleBinding]{
+	syncObjects(ctx, instance, "RoleBinding", "rb/", rbs.Items, wantRB, owner, note, rbacOps[rbacv1.RoleBinding]{
 		key:      func(o *rbacv1.RoleBinding) string { return o.Namespace + "/" + o.Name },
 		meta:     func(o *rbacv1.RoleBinding) *metav1.ObjectMeta { return &o.ObjectMeta },
 		roleRef:  func(o *rbacv1.RoleBinding) rbacv1.RoleRef { return o.RoleRef },
@@ -387,7 +403,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 		},
 	})
 
-	if err := r.reconcileAWSAuth(ctx, bindings, note); err != nil {
+	if err := r.reconcileAWSAuth(ctx, instance, bindings, note); err != nil {
 		slog.Warn("aws-auth", "err", err)
 	}
 
@@ -413,16 +429,19 @@ type rbacOps[T any] struct {
 	create, update, delete func(context.Context, *T) error
 }
 
-// syncObjects makes the existing Gate objects of one kind match want: stale
-// ones are deleted, edited ones repaired (a changed roleRef is immutable, so
-// recreated), missing ones created. want is consumed.
-func syncObjects[T any](ctx context.Context, kind, ownerPrefix string, have []T, want map[string]*T, owner map[string]string,
+// syncObjects makes the existing Gate objects of one kind match want: this
+// Gate's stale ones are deleted, edited ones repaired (a changed roleRef is
+// immutable, so recreated), missing ones created. want is consumed.
+func syncObjects[T any](ctx context.Context, instance, kind, ownerPrefix string, have []T, want map[string]*T, owner map[string]string,
 	note func(id, obj string, err error), ops rbacOps[T]) {
 	for i := range have {
 		obj := &have[i]
 		key := ops.key(obj)
 		w, ok := want[key]
 		if !ok {
+			if ops.meta(obj).Labels[kube.LabelInstance] != instance {
+				continue // another Gate's, or from before instance IDs: not ours to delete
+			}
 			if err := ops.delete(ctx, obj); err != nil && !apierrors.IsNotFound(err) {
 				slog.Warn("deleting stale "+kind, "key", key, "err", err)
 			}
@@ -454,9 +473,13 @@ func (r *Reconciler) fail(err error) error {
 	return err
 }
 
-// ManagedObjects lists every RBAC object Gate owns (for uninstall checks and the UI).
+// ManagedObjects lists every RBAC object this Gate owns (for uninstall checks and the UI).
 func (r *Reconciler) ManagedObjects(ctx context.Context) ([]string, error) {
-	sel := metav1.ListOptions{LabelSelector: kube.ManagedSelector()}
+	instance, err := r.st.InstanceID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	sel := metav1.ListOptions{LabelSelector: kube.ManagedSelector() + "," + kube.LabelInstance + "=" + instance}
 	var out []string
 	crbs, err := r.kc.RBAC.ClusterRoleBindings().List(ctx, sel)
 	if err != nil {

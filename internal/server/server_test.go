@@ -125,7 +125,7 @@ func TestSignInProxyAndAudit(t *testing.T) {
 	}
 	cs := fake.NewSimpleClientset()
 	kc := &kube.Client{Config: &rest.Config{Host: api.URL}, RBAC: cs.RbacV1(), Core: cs.CoreV1()}
-	gate.Config.Handler = New(Deps{Config: cfg, Store: st, Kube: kc, Recorder: rec, Sessions: sessions, Policy: policy.New(kc, st, time.Minute), Proxy: px})
+	gate.Config.Handler = New(Deps{Config: cfg, Store: st, Kube: kc, Recorder: rec, Sessions: sessions, Policy: policy.New(kc, st, time.Minute, cfg.ExternalURL), Proxy: px})
 	gate.Start()
 	defer gate.Close()
 

@@ -22,8 +22,11 @@ const (
 	LabelManagedBy = "kuberoam.dev/managed-by"
 	ManagedBy      = "roam-gate"
 	LabelBinding   = "kuberoam.dev/binding"
-	AnnoSubject    = "kuberoam.dev/subject"
-	AnnoNote       = "kuberoam.dev/note"
+	// LabelInstance names the Gate (store.InstanceID) that made an object:
+	// a Gate deletes only its own, whatever else carries Gate's labels.
+	LabelInstance = "kuberoam.dev/gate-instance"
+	AnnoSubject   = "kuberoam.dev/subject"
+	AnnoNote      = "kuberoam.dev/note"
 )
 
 // Client holds the REST config and the typed clients Gate uses.

@@ -75,6 +75,8 @@ const (
 	AWSAuthInvalid     Code = "binding.awsAuthInvalid"
 	AWSAuthUpdate      Code = "binding.awsAuthUpdate"
 	RBACListFailed     Code = "binding.rbacListFailed"
+	LockHeld           Code = "binding.lockHeld"
+	LockFailed         Code = "binding.lockFailed"
 )
 
 // Sign-in pages.

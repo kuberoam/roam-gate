@@ -68,6 +68,8 @@ var en = map[Code]string{
 	AWSAuthInvalid:     "aws-auth is not valid YAML, so Gate leaves it alone: {error}",
 	AWSAuthUpdate:      "Couldn't update aws-auth: {error}",
 	RBACListFailed:     "Couldn't list {what}: {error}",
+	LockHeld:           "Another Roam Gate ({holder}) already manages this cluster's access, so this one changes nothing. Keep one Gate per cluster: uninstall the other, or this one. This Gate takes over by itself {ttl} after the other stops.",
+	LockFailed:         "Couldn't claim the cluster for this Gate: {error}",
 
 	PageTitleSignIn:      "Sign in",
 	PageTitleError:       "Roam Gate",
@@ -90,8 +92,8 @@ var en = map[Code]string{
 	PageShowKubeconfig:   "Show kubeconfig",
 	PageOpenRoam:         "Open in Roam",
 	PageOpeningRoam:      "Opening Roam… If it doesn't open, use the button below or download the kubeconfig.",
-	PageOpenRoamHint:     "Roam signs you in to this cluster by itself. The link works once, on this computer, for 10 minutes.",
+	PageOpenRoamHint:     "Roam signs you in to this cluster by itself. The link works once, on this device, for 10 minutes.",
 	PageKubeconfigHint:   "Use it with kubectl --kubeconfig kubeconfig-roam-gate.yaml get pods, or open this cluster in Roam. Keep the file private: it works as your password until it expires.",
 	PageReturnToApp:      "Going back to Roam…",
-	PageAppRequest:       "Roam on this computer asked to sign you in.",
+	PageAppRequest:       "Roam on this device asked to sign you in.",
 }

@@ -30,6 +30,12 @@ const (
 	awsPrefix        = "roam:aws:"
 )
 
+// instanceGroupPrefix marks which Gate made an aws-auth entry: a group no
+// RBAC refers to, so it grants nothing.
+const instanceGroupPrefix = "kuberoam.dev/gate-instance:"
+
+func instanceGroup(instance string) string { return instanceGroupPrefix + instance }
+
 // AWSGroup is the Kubernetes group an aws binding grants to.
 func AWSGroup(bindingID string) string { return awsPrefix + bindingID }
 
@@ -56,7 +62,7 @@ type mapEntry struct {
 	Groups   []string `json:"groups,omitempty"`
 }
 
-func (r *Reconciler) reconcileAWSAuth(ctx context.Context, bindings []*store.Binding, note func(id, obj string, err error)) error {
+func (r *Reconciler) reconcileAWSAuth(ctx context.Context, instance string, bindings []*store.Binding, note func(id, obj string, err error)) error {
 	var aws []*store.Binding
 	for _, b := range bindings {
 		if b.SubjectKind == store.SubjectAWS {
@@ -96,7 +102,24 @@ func (r *Reconciler) reconcileAWSAuth(ctx context.Context, bindings []*store.Bin
 		}
 		return err
 	}
-	mine := func(e mapEntry) bool { return strings.HasPrefix(e.Username, awsPrefix) }
+	// An entry is this Gate's if it carries this Gate's instance group, or —
+	// made before instance IDs — belongs to one of its bindings. Another
+	// Gate's entries stay.
+	ours := map[string]bool{}
+	for _, b := range aws {
+		ours[b.ID] = true
+	}
+	mark := instanceGroup(instance)
+	mine := func(e mapEntry) bool {
+		if !strings.HasPrefix(e.Username, awsPrefix) {
+			return false
+		}
+		if slices.Contains(e.Groups, mark) {
+			return true
+		}
+		id, _, _ := strings.Cut(strings.TrimPrefix(e.Username, awsPrefix), ":")
+		return ours[id] && !slices.ContainsFunc(e.Groups, func(g string) bool { return strings.HasPrefix(g, instanceGroupPrefix) })
+	}
 	newRoles := slices.DeleteFunc(slices.Clone(roles), mine)
 	newUsers := slices.DeleteFunc(slices.Clone(users), mine)
 	for _, b := range aws {
@@ -105,7 +128,7 @@ func (r *Reconciler) reconcileAWSAuth(ctx context.Context, bindings []*store.Bin
 			note(b.ID, "", err)
 			continue
 		}
-		e := mapEntry{Username: awsPrefix + b.ID + ":{{SessionName}}", Groups: []string{AWSGroup(b.ID)}}
+		e := mapEntry{Username: awsPrefix + b.ID + ":{{SessionName}}", Groups: []string{AWSGroup(b.ID), mark}}
 		if kind == "role" {
 			e.RoleARN = arn
 			newRoles = append(newRoles, e)

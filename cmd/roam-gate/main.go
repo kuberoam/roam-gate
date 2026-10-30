@@ -66,8 +66,12 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	rc := policy.New(kc, st, cfg.ReconcileInterval)
-	go rc.Run(ctx)
+	rc := policy.New(kc, st, cfg.ReconcileInterval, cfg.ExternalURL)
+	rcDone := make(chan struct{})
+	go func() {
+		rc.Run(ctx) // gives the cluster lock up on its way out
+		close(rcDone)
+	}()
 	go prune(ctx, st, cfg.AuditRetention)
 
 	var caPEM []byte
@@ -105,9 +109,17 @@ func run() error {
 		}
 	case <-ctx.Done():
 	}
+	stop() // a server error ends the reconciler too
 	shutdown, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	return srv.Shutdown(shutdown)
+	err = srv.Shutdown(shutdown)
+	// Wait for the reconciler to release the cluster lock, so another Gate
+	// can take over at once instead of after the lock's TTL.
+	select {
+	case <-rcDone:
+	case <-time.After(10 * time.Second):
+	}
+	return err
 }
 
 // prune applies the audit retention once an hour.
