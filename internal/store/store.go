@@ -29,7 +29,12 @@ var migrations embed.FS
 var ErrNotFound = errors.New("not found")
 
 type Store struct {
-	db  *sql.DB
+	db *sql.DB
+	// rdb runs the audit trail's queries (the admin screen's searches), in
+	// a pool of its own: a few slow searches over millions of events must
+	// not take the connections every proxied request needs to look up its
+	// session.
+	rdb *sql.DB
 	box *secure.Box
 }
 
@@ -45,17 +50,28 @@ func Open(dir string, key []byte) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	// SQLite allows one writer at a time; a small pool avoids lock churn.
-	db.SetMaxOpenConns(4)
+	// SQLite allows one writer at a time (busy_timeout queues the rest); WAL
+	// lets readers — session lookups on every request — run alongside.
+	db.SetMaxOpenConns(8)
 	s := &Store{db: db, box: box}
 	if err := s.migrate(); err != nil {
 		db.Close()
 		return nil, err
 	}
+	rdb, err := sql.Open("sqlite", dsn+"&_pragma=query_only(1)")
+	if err != nil {
+		db.Close()
+		return nil, err
+	}
+	rdb.SetMaxOpenConns(4)
+	s.rdb = rdb
 	return s, nil
 }
 
-func (s *Store) Close() error { return s.db.Close() }
+func (s *Store) Close() error {
+	s.rdb.Close()
+	return s.db.Close()
+}
 
 // Ping checks the database answers (readiness).
 func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
@@ -693,7 +709,7 @@ func (s *Store) Audit(ctx context.Context, q AuditQuery) ([]*Event, error) {
 	if q.Limit <= 0 || q.Limit > 1000 {
 		q.Limit = 200
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, ts, kind, user, groups, session, verb, resource, subresource, namespace, name, path, status, allowed, ip, ua, duration_ms, detail
+	rows, err := s.rdb.QueryContext(ctx, `SELECT id, ts, kind, user, groups, session, verb, resource, subresource, namespace, name, path, status, allowed, ip, ua, duration_ms, detail
 		FROM audit WHERE `+strings.Join(where, " AND ")+` ORDER BY id DESC LIMIT ?`, append(args, q.Limit)...)
 	if err != nil {
 		return nil, err
@@ -714,7 +730,14 @@ func (s *Store) Audit(ctx context.Context, q AuditQuery) ([]*Event, error) {
 	return out, rows.Err()
 }
 
-const pruneBatch = 5000
+const (
+	pruneBatch = 5000
+	// prunePause between batches lets queued writers (audit batches,
+	// sign-ins, session touches) in: SQLite's busy wait polls instead of
+	// queueing, so back-to-back DELETEs would keep them out until the whole
+	// prune ends — longer than busy_timeout after a busy hour.
+	prunePause = 25 * time.Millisecond
+)
 
 // Prune drops audit events older than the retention, and sessions and login
 // requests that ended more than a day ago.
@@ -731,6 +754,11 @@ func (s *Store) Prune(ctx context.Context, retention time.Duration) (int64, erro
 		n += k
 		if k < pruneBatch {
 			break
+		}
+		select {
+		case <-ctx.Done():
+			return n, ctx.Err()
+		case <-time.After(prunePause):
 		}
 	}
 	day := ms(time.Now().Add(-24 * time.Hour))

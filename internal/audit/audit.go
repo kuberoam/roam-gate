@@ -70,17 +70,28 @@ func (r *Recorder) write(batch []*store.Event) error {
 	return r.st.InsertEvents(ctx, batch)
 }
 
+// maxPending bounds the events kept for a retry after a failed write.
+const maxPending = 16384
+
 func (r *Recorder) loop() {
 	defer close(r.done)
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	var batch []*store.Event
+	var retryAt time.Time // after a failed write, wait for the tick
 	flush := func() {
 		if len(batch) == 0 {
 			return
 		}
 		if err := r.write(batch); err != nil {
-			slog.Error("audit write failed", "err", err, "events", len(batch))
+			// Usually the database was busy (a long prune): keep the events
+			// for the next tick rather than lose them, up to a bound.
+			if len(batch) < maxPending {
+				slog.Warn("audit write failed; retrying", "err", err, "events", len(batch))
+				retryAt = time.Now().Add(time.Second)
+				return
+			}
+			slog.Error("audit write failed; events dropped", "err", err, "events", len(batch))
 		}
 		batch = batch[:0]
 	}
@@ -92,7 +103,7 @@ func (r *Recorder) loop() {
 				return
 			}
 			batch = append(batch, e)
-			if len(batch) >= 256 {
+			if len(batch) >= 256 && time.Now().After(retryAt) {
 				flush()
 			}
 		case <-tick.C:
