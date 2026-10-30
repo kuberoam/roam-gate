@@ -351,8 +351,19 @@ func (l *rateLimiter) allow(key string) bool {
 
 // ------------------------------------------------------------------ kubeconfig
 
+// kubeconfigName is the cluster/context name in issued kubeconfigs: the
+// cluster name with "-roam-gate", so merging one into ~/.kube/config doesn't
+// collide with (or read like) the context people already have for the same
+// cluster. Roam names clusters it adds through Gate the same way.
+func kubeconfigName(cluster string) string {
+	if strings.HasSuffix(strings.ToLower(cluster), "roam-gate") {
+		return cluster
+	}
+	return cluster + "-roam-gate"
+}
+
 func (s *Server) kubeconfigYAML(sess *store.Session, token string) string {
-	cluster := s.cfg.ClusterName
+	cluster := kubeconfigName(s.cfg.ClusterName)
 	var ca string
 	if len(s.caPEM) > 0 {
 		ca = "\n    certificate-authority-data: " + base64.StdEncoding.EncodeToString(s.caPEM)

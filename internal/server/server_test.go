@@ -304,6 +304,9 @@ func TestSignInProxyAndAudit(t *testing.T) {
 
 	// A kubeconfig for the session points at the proxy.
 	_, kc2 := call("GET", "/api/v1/kubeconfig", token, "")
+	if !strings.Contains(string(kc2), "current-context: test-roam-gate") {
+		t.Fatalf("the context is named apart from the cluster's own: %s", kc2)
+	}
 	if !strings.Contains(string(kc2), cfg.ExternalURL+"/k8s") || !strings.Contains(string(kc2), token) {
 		t.Fatalf("kubeconfig: %s", kc2)
 	}

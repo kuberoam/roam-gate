@@ -22,7 +22,7 @@ Roam Gate is the access-control service behind [Roam](https://github.com/kuberoa
                         audit trail (SQLite)            (RoleBindings written by Gate)
 ```
 
-1. People sign in with SSO. Gate issues a session token (`rg_…`) and a kubeconfig whose server is `https://<gate>/k8s`.
+1. People sign in with SSO. Gate issues a session token (`rg_…`) and a kubeconfig whose server is `https://<gate>/k8s`; its context is named `<clusterName>-roam-gate`, so merging it into `~/.kube/config` doesn't clash with a context people already have for the same cluster.
 2. Gate authenticates each request and forwards it to the API server as the person, using impersonation: user `roam:<id>`, groups `roam:<provider>:<group>` and `roam:authenticated`. Anything the client sends to impersonate someone else is dropped.
 3. The API server's own RBAC decides. Gate turns its *bindings* ("group `github:acme/devs` gets `edit` in `staging`") into RoleBindings / ClusterRoleBindings labelled `kuberoam.dev/managed-by=roam-gate`, and keeps them in shape: it watches only its own objects (by label), so an edit by hand or a deletion is undone within a second; deleting a binding removes its objects; nothing else is touched.
 4. Every request worth investigating is recorded, together with sign-ins, session revocations and admin changes (with before/after).
@@ -106,7 +106,9 @@ Every provider also accepts `allowedDomains` (email domains) and `allowedGroups`
 | `aws` | an IAM role or user ARN (EKS with `aws-auth`) — people keep using `aws eks get-token` |
 | `k8s-user`, `k8s-group` | a raw Kubernetes name, used as-is — Google accounts/groups on GKE, Entra ID object IDs on AKS |
 
-`role` is any ClusterRole (`view`, `edit`, `admin`, `cluster-admin` or your own); `scope` is `cluster` or `namespaces`.
+`role` is any ClusterRole (`view`, `edit`, `admin`, `cluster-admin` or your own); `scope` is `cluster` or `namespaces`. Note that `admin`, even with `scope: cluster`, is Kubernetes' *namespace* admin: it can't list nodes, CRDs, PersistentVolumes or StorageClasses. Grant `cluster-admin` to someone who administers the cluster.
+
+`user` subjects are stored the way sessions carry them — lowercase, without the `roam:` prefix (`Alice@Acme.com` and `roam:alice@acme.com` both become `alice@acme.com`), so a binding always matches the person Gate impersonates.
 
 On EKS clusters that use access entries instead of `aws-auth`, Roam adds the access entry with your AWS credentials; Gate still manages the RBAC side.
 

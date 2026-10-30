@@ -179,6 +179,17 @@ func TestValidate(t *testing.T) {
 	if err := Validate(&dup); err != nil || len(dup.Namespaces) != 2 || dup.Role != "system:aggregate-to-view" {
 		t.Fatalf("normalised: %v %+v", err, dup)
 	}
+	// Users as sessions carry them (lowercase, no "roam:"), or the binding grants nobody.
+	for in, want := range map[string]string{" Alice@Corp.com ": "alice@corp.com", "roam:Alice@Corp.com": "alice@corp.com", "github:Bob": "github:bob"} {
+		u := store.Binding{SubjectKind: store.SubjectUser, Subject: in, Role: "view", Scope: store.ScopeCluster}
+		if err := Validate(&u); err != nil || u.Subject != want {
+			t.Errorf("user %q: %v %q, want %q", in, err, u.Subject, want)
+		}
+	}
+	g := store.Binding{SubjectKind: store.SubjectGroup, Subject: "roam:github:Acme/SRE", Role: "view", Scope: store.ScopeCluster}
+	if err := Validate(&g); err != nil || g.Subject != "github:Acme/SRE" {
+		t.Errorf("group: %v %q (case kept: providers' group names may be case-sensitive)", err, g.Subject)
+	}
 }
 
 // An edit by hand to one of Gate's bindings is undone right away by the

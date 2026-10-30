@@ -170,11 +170,14 @@ func Subject(b *store.Binding) (rbacv1.Subject, error) {
 	if strings.TrimSpace(b.Subject) == "" {
 		return s, msg.New(msg.SubjectRequired)
 	}
+	// Bindings saved before Validate normalized subjects still match.
+	n := *b
+	normalizeSubject(&n)
 	switch b.SubjectKind {
 	case store.SubjectUser:
-		s.Kind, s.Name = rbacv1.UserKind, identity.KubeUser(b.Subject)
+		s.Kind, s.Name = rbacv1.UserKind, identity.KubeUser(n.Subject)
 	case store.SubjectGroup:
-		s.Kind, s.Name = rbacv1.GroupKind, identity.KubeGroup(b.Subject)
+		s.Kind, s.Name = rbacv1.GroupKind, identity.KubeGroup(n.Subject)
 	case store.SubjectAWS:
 		s.Kind, s.Name = rbacv1.GroupKind, AWSGroup(b.ID)
 	case store.SubjectK8sUser:
@@ -187,8 +190,9 @@ func Subject(b *store.Binding) (rbacv1.Subject, error) {
 	return s, nil
 }
 
-// Validate checks a binding before it is saved.
+// Validate checks a binding before it is saved, and normalizes its subject.
 func Validate(b *store.Binding) error {
+	normalizeSubject(b)
 	if _, err := Subject(b); err != nil {
 		return err
 	}
@@ -235,6 +239,21 @@ var reservedSubjects = map[string]string{
 	"system:authenticated":   "every user and service account of the cluster",
 	"system:serviceaccounts": "every service account of the cluster",
 	"system:masters":         "the cluster's built-in administrators",
+}
+
+// normalizeSubject writes a Gate user or group the way sessions carry it, so
+// the binding matches the person Gate impersonates: user IDs are lowercase
+// (identity.UserID), and neither takes the "roam:" prefix Gate adds itself.
+// Typed as "Alice@Acme.com" or "roam:alice@acme.com", a binding would
+// otherwise grant nothing and every request would be refused.
+func normalizeSubject(b *store.Binding) {
+	b.Subject = strings.TrimSpace(b.Subject)
+	switch b.SubjectKind {
+	case store.SubjectUser:
+		b.Subject = strings.ToLower(strings.TrimPrefix(b.Subject, identity.KubePrefix))
+	case store.SubjectGroup:
+		b.Subject = strings.TrimPrefix(b.Subject, identity.KubePrefix)
+	}
 }
 
 func checkSubject(b *store.Binding) error {
