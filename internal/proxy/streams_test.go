@@ -28,12 +28,11 @@ func (f *fakeSessions) Authenticate(*http.Request) (*store.Session, error) {
 }
 func (f *fakeSessions) Live(context.Context, string) bool { return f.live.Load() }
 
-// watchUntilCut opens a stream through the proxy and returns how long it lasted.
-func watchUntilCut(t *testing.T, p *Proxy, during func()) time.Duration {
+// watchUntilCut opens a stream through the proxy and waits for it to be cut.
+func watchUntilCut(t *testing.T, p *Proxy, during func()) {
 	t.Helper()
 	gate := httptest.NewServer(p)
 	defer gate.Close()
-	start := time.Now()
 	resp, err := http.Get(gate.URL + Prefix + "/api/v1/pods?watch=1")
 	if err != nil {
 		t.Fatal(err)
@@ -53,7 +52,6 @@ func watchUntilCut(t *testing.T, p *Proxy, during func()) time.Duration {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the stream outlived its session")
 	}
-	return time.Since(start)
 }
 
 func streamingProxy(t *testing.T, f *fakeSessions) *Proxy {
@@ -80,10 +78,11 @@ func streamingProxy(t *testing.T, f *fakeSessions) *Proxy {
 }
 
 func TestStreamEndsWhenItsSessionExpires(t *testing.T) {
-	f := &fakeSessions{expires: time.Now().Add(400 * time.Millisecond)}
+	f := &fakeSessions{expires: time.Now().Add(2 * time.Second)}
 	f.live.Store(true)
-	if d := watchUntilCut(t, streamingProxy(t, f), func() {}); d < 300*time.Millisecond {
-		t.Fatalf("ended early: %v", d)
+	watchUntilCut(t, streamingProxy(t, f), func() {})
+	if left := time.Until(f.expires); left > 0 {
+		t.Fatalf("ended %v before the session did", left)
 	}
 }
 
