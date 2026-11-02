@@ -227,3 +227,49 @@ func TestRunRepairsHandEditsImmediately(t *testing.T) {
 	cs.RbacV1().ClusterRoleBindings().Delete(ctx, "roam-gate-b1", metav1.DeleteOptions{})
 	waitFor("the binding to be recreated", func() bool { return get() != nil })
 }
+
+func TestGrantedNamespaces(t *testing.T) {
+	bs := []*store.Binding{
+		{ID: "1", SubjectKind: store.SubjectUser, Subject: "alice@corp.com", Scope: store.ScopeNamespaces, Namespaces: []string{"b", "a"}},
+		{ID: "2", SubjectKind: store.SubjectGroup, Subject: "google:dev", Scope: store.ScopeNamespaces, Namespaces: []string{"a", "c"}},
+		{ID: "3", SubjectKind: store.SubjectUser, Subject: "alice@corp.com", Scope: store.ScopeCluster},
+		{ID: "4", SubjectKind: store.SubjectUser, Subject: "bob@corp.com", Scope: store.ScopeNamespaces, Namespaces: []string{"d"}},
+		{ID: "5", SubjectKind: store.SubjectK8sGroup, Subject: "ops", Scope: store.ScopeNamespaces, Namespaces: []string{"e"}},
+	}
+	got := GrantedNamespaces(bs, "roam:alice@corp.com", []string{"roam:google:dev", "roam:authenticated", "ops"})
+	if strings.Join(got, ",") != "a,b,c,e" {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestGrantsRereadWhenBindingsChange(t *testing.T) {
+	_, st, _ := setup(t)
+	g := NewGrants(st, nil)
+	ctx := context.Background()
+	save := func(id string, nss ...string) {
+		if err := st.SaveBinding(ctx, &store.Binding{ID: id, SubjectKind: store.SubjectUser, Subject: "alice@corp.com", Role: "view", Scope: store.ScopeNamespaces, Namespaces: nss}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := func() string {
+		nss, err := g.Namespaces(ctx, "roam:alice@corp.com", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.Join(nss, ",")
+	}
+	save("b1", "a")
+	if s := got(); s != "a" {
+		t.Fatalf("got %q", s)
+	}
+	save("b2", "b")
+	if s := got(); s != "a,b" {
+		t.Fatalf("after a save: %q", s)
+	}
+	if err := st.DeleteBinding(ctx, "b1"); err != nil {
+		t.Fatal(err)
+	}
+	if s := got(); s != "b" {
+		t.Fatalf("after a delete: %q", s)
+	}
+}

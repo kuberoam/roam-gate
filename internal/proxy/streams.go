@@ -70,6 +70,11 @@ func (p *Proxy) Run(ctx context.Context) {
 			return
 		case <-t.C:
 			p.open.sweep(ctx, p.sessions.Live)
+			if p.granted != nil {
+				if v, ok := p.granted.Version(); ok {
+					p.memo.prune(v)
+				}
+			}
 		}
 	}
 }

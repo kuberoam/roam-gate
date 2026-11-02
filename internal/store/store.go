@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/kuberoam/roam-gate/internal/msg"
@@ -36,6 +37,9 @@ type Store struct {
 	// session.
 	rdb *sql.DB
 	box *secure.Box
+	// bindingsVersion changes with every binding saved or deleted, so a copy
+	// of the bindings (policy.Grants) knows when to read them again.
+	bindingsVersion atomic.Uint64
 }
 
 // Open opens (and migrates) the database in dir. key encrypts provider secrets.
@@ -550,6 +554,7 @@ func (s *Store) SaveBinding(ctx context.Context, b *Binding) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO bindings (id, subject_kind, subject, role, scope, namespaces, note, created_by, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET subject_kind = excluded.subject_kind, subject = excluded.subject, role = excluded.role, scope = excluded.scope, namespaces = excluded.namespaces, note = excluded.note`,
 		b.ID, b.SubjectKind, b.Subject, b.Role, b.Scope, toJSON(b.Namespaces), b.Note, b.CreatedBy, ms(b.Created))
+	s.bindingsVersion.Add(1)
 	return err
 }
 
@@ -591,8 +596,12 @@ func (s *Store) Bindings(ctx context.Context) ([]*Binding, error) {
 }
 
 func (s *Store) DeleteBinding(ctx context.Context, id string) error {
+	defer s.bindingsVersion.Add(1)
 	return one(s.db.ExecContext(ctx, `DELETE FROM bindings WHERE id = ?`, id))
 }
+
+// BindingsVersion changes whenever a binding is saved or deleted.
+func (s *Store) BindingsVersion() uint64 { return s.bindingsVersion.Load() }
 
 // -------------------------------------------------------------------- audit
 

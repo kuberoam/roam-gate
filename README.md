@@ -69,7 +69,7 @@ kubectl -n roam-system get secret roam-gate-secrets -o jsonpath='{.data.admin-to
 
 ### What Gate may do in your cluster
 
-Gate's ClusterRole lets it **impersonate** users and groups, **manage RoleBindings / ClusterRoleBindings** and **bind ClusterRoles**, and list namespaces and ClusterRoles. That is powerful — whoever administers Gate can grant any role — so protect the admin token and choose `admins.*` carefully. Gate only ever changes bindings it created.
+Gate's ClusterRole lets it **impersonate** users and groups, **manage RoleBindings / ClusterRoleBindings** and **bind ClusterRoles**, list namespaces, and list and watch ClusterRoles. That is powerful — whoever administers Gate can grant any role — so protect the admin token and choose `admins.*` carefully. Gate only ever changes bindings it created.
 
 ### One Gate per cluster
 
@@ -116,7 +116,9 @@ When a session expires, or is revoked (by an admin, by disabling the user, or by
 | `aws` | an IAM role or user ARN (EKS with `aws-auth`) — people keep using `aws eks get-token` |
 | `k8s-user`, `k8s-group` | a raw Kubernetes name, used as-is — Google accounts/groups on GKE, Entra ID object IDs on AKS |
 
-`role` is any ClusterRole (`view`, `edit`, `admin`, `cluster-admin` or your own); `scope` is `cluster` or `namespaces`. Note that `admin`, even with `scope: cluster`, is Kubernetes' *namespace* admin: it can't list nodes, CRDs, PersistentVolumes or StorageClasses. Grant `cluster-admin` to someone who administers the cluster.
+`role` is any ClusterRole (`view`, `edit`, `admin`, `cluster-admin` or your own). Roam offers four: `roam-gate-developer` (reads what `view` reads, not Secrets; no changes, exec or port-forward), `roam-gate-techlead` (developer, plus changing workloads, config maps, services and ingresses, reading Secrets, exec and port-forward; not writing Secrets or permissions, creating volumes, or changing nodes, which both see read only), `admin` and `cluster-admin`. The chart installs the first two, built by aggregation like `view`, so widen them by labelling a ClusterRole `kuberoam.dev/aggregate-to-developer` or `kuberoam.dev/aggregate-to-techlead`. `scope` is `cluster` or `namespaces`. Note that `admin`, even with `scope: cluster`, is Kubernetes' *namespace* admin: it can't list nodes, CRDs, PersistentVolumes or StorageClasses. Grant `cluster-admin` to someone who administers the cluster.
+
+With `scope: namespaces` the API server refuses lists and watches across all namespaces (`kubectl get pods -A`, the namespace list, Roam's screens). When it does, Gate asks again in each namespace that person was granted, still as them, and returns the results together. The namespace list holds just those namespaces. Anything the API server refuses in a namespace is left out, and cluster-scoped resources (nodes, PersistentVolumes) stay refused. Gate remembers that a session's lists were answered this way, and skips the refused request next time, only until any RBAC in the cluster changes. It watches every (Cluster)RoleBinding and ClusterRole for this, counting changes without keeping copies. A merged watch ends with `410 Expired` so clients list again. Pagination (`limit`) doesn't apply to these lists.
 
 `user` subjects are stored the way sessions carry them — lowercase, without the `roam:` prefix (`Alice@Acme.com` and `roam:alice@acme.com` both become `alice@acme.com`), so a binding always matches the person Gate impersonates.
 

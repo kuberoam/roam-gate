@@ -19,7 +19,7 @@ rules:
     verbs: [get, list, watch, create, update, patch, delete]
   - apiGroups: [rbac.authorization.k8s.io]
     resources: [clusterroles]
-    verbs: [get, list, bind]
+    verbs: [get, list, watch, bind]
   - apiGroups: [""]
     resources: [namespaces]
     verbs: [get, list]

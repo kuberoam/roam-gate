@@ -38,14 +38,19 @@ type Sessions interface {
 
 type Proxy struct {
 	rp       *httputil.ReverseProxy
+	target   *url.URL
+	client   *http.Client // as Gate; requests carry the person's impersonation headers
 	sessions Sessions
+	granted  Granted // nil: lists across namespaces aren't spread (spread.go)
+	memo     spreadMemo
+	scopes   scopes
 	rec      *audit.Recorder
 	level    config.AuditLevel
 	open     streams
 }
 
 // New proxies to apiServer through transport (which authenticates as Gate).
-func New(apiServer string, transport http.RoundTripper, sessions Sessions, rec *audit.Recorder, level config.AuditLevel) (*Proxy, error) {
+func New(apiServer string, transport http.RoundTripper, sessions Sessions, granted Granted, rec *audit.Recorder, level config.AuditLevel) (*Proxy, error) {
 	target, err := url.Parse(apiServer)
 	if err != nil {
 		return nil, err
@@ -64,7 +69,7 @@ func New(apiServer string, transport http.RoundTripper, sessions Sessions, rec *
 			writeStatus(w, http.StatusBadGateway, msg.T(msg.Lang(r), msg.APIServerUnreachable))
 		},
 	}
-	return &Proxy{rp: rp, sessions: sessions, rec: rec, level: level}, nil
+	return &Proxy{rp: rp, target: target, client: &http.Client{Transport: transport}, sessions: sessions, granted: granted, rec: rec, level: level}, nil
 }
 
 // statusReasons are the metav1.StatusReason values kubectl expects.
@@ -165,7 +170,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r.Header.Set("Impersonate-Extra-"+ExtraSession, sess.ID)
 
 	sw := &statusWriter{ResponseWriter: w}
-	p.rp.ServeHTTP(sw, r)
+	if p.granted != nil && spreadable(r, info) {
+		p.spread(sw, r, info, path, sess)
+	} else {
+		p.rp.ServeHTTP(sw, r)
+	}
 
 	code := sw.code
 	if code == 0 && r.Header.Get("Upgrade") != "" {

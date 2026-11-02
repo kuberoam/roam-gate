@@ -70,7 +70,7 @@ func streamingProxy(t *testing.T, f *fakeSessions) *Proxy {
 	t.Cleanup(func() { st.Close() })
 	rec := audit.New(st, nil)
 	t.Cleanup(rec.Close)
-	p, err := New(api.URL, http.DefaultTransport, f, rec, config.AuditWrites)
+	p, err := New(api.URL, http.DefaultTransport, f, nil, rec, config.AuditWrites)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestUpgradedConnectionEndsWithItsSession(t *testing.T) {
 	t.Cleanup(func() { st.Close() })
 	rec := audit.New(st, nil)
 	t.Cleanup(rec.Close)
-	p, err := New(api.URL, http.DefaultTransport, f, rec, config.AuditWrites)
+	p, err := New(api.URL, http.DefaultTransport, f, nil, rec, config.AuditWrites)
 	if err != nil {
 		t.Fatal(err)
 	}

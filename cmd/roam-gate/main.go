@@ -62,7 +62,7 @@ func run() error {
 	defer rec.Close()
 
 	sessions := auth.NewSessions(st, cfg.SessionTTL, cfg.AdminToken, cfg.AdminUsers, cfg.AdminGroups)
-	px, err := proxy.New(kc.Host(), transport, sessions, rec, cfg.AuditLevel)
+	px, err := proxy.New(kc.Host(), transport, sessions, policy.NewGrants(st, policy.WatchRBAC(ctx, kc)), rec, cfg.AuditLevel)
 	if err != nil {
 		return err
 	}

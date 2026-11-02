@@ -119,7 +119,7 @@ func TestSignInProxyAndAudit(t *testing.T) {
 		AdminToken: "bootstrap-admin-token", SessionTTL: time.Hour, AuditLevel: config.AuditWrites}
 	rec := audit.New(st, nil)
 	sessions := auth.NewSessions(st, cfg.SessionTTL, cfg.AdminToken, nil, []string{"mock:ops"})
-	px, err := proxy.New(api.URL, http.DefaultTransport, sessions, rec, cfg.AuditLevel)
+	px, err := proxy.New(api.URL, http.DefaultTransport, sessions, nil, rec, cfg.AuditLevel)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -395,7 +395,7 @@ func TestLoginFromTheApp(t *testing.T) {
 	rec := audit.New(st, nil)
 	defer rec.Close()
 	sessions := auth.NewSessions(st, cfg.SessionTTL, cfg.AdminToken, nil, nil)
-	px, err := proxy.New("http://127.0.0.1:1", http.DefaultTransport, sessions, rec, cfg.AuditLevel)
+	px, err := proxy.New("http://127.0.0.1:1", http.DefaultTransport, sessions, nil, rec, cfg.AuditLevel)
 	if err != nil {
 		t.Fatal(err)
 	}
