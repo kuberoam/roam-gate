@@ -1,0 +1,120 @@
+# The roles Roam offers besides Kubernetes' admin and cluster-admin. Each is
+# put together by aggregation, like Kubernetes' own view and edit: what
+# "view" reads (a CRD's viewer role included, as it is installed), then the
+# roles below labelled for it. Add a ClusterRole with one of these labels to
+# widen a role in your cluster.
+#
+#   roam-gate-developer  reads everything view reads: workloads, logs, events,
+#                        config maps, services — not Secrets; no changes, no
+#                        exec or port-forward. Bound everywhere, also nodes,
+#                        storage and CRDs.
+#   roam-gate-techlead   developer, plus: changes workloads (deploy, scale,
+#                        restart, rollback, jobs, autoscaling), config maps,
+#                        services and ingresses; reads Secrets; port-forward,
+#                        exec and attach. Not: writing Secrets, permissions
+#                        (Roles, bindings, service accounts and their tokens),
+#                        network policies, quotas, namespaces, volumes
+#                        (PersistentVolumeClaims), or nodes — no labels,
+#                        taints, cordon, drain or delete: nodes are read only.
+#
+# Their names are fixed (one Gate per cluster): Roam looks for them.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: roam-gate-developer
+  labels:
+    {{- include "gate.labels" . | nindent 4 }}
+aggregationRule:
+  clusterRoleSelectors:
+    - matchLabels:
+        rbac.authorization.k8s.io/aggregate-to-view: "true"
+    - matchLabels:
+        kuberoam.dev/aggregate-to-developer: "true"
+rules: [] # filled in by the aggregation controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: roam-gate-techlead
+  labels:
+    {{- include "gate.labels" . | nindent 4 }}
+aggregationRule:
+  clusterRoleSelectors:
+    - matchLabels:
+        rbac.authorization.k8s.io/aggregate-to-view: "true"
+    - matchLabels:
+        kuberoam.dev/aggregate-to-developer: "true"
+    - matchLabels:
+        kuberoam.dev/aggregate-to-techlead: "true"
+rules: []
+---
+# What a developer reads beyond view. Read only: nothing here, nor in
+# techlead, changes a node. The cluster-scoped kinds count only
+# when the role is granted everywhere (a ClusterRoleBinding); in namespaces
+# they grant nothing.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: roam-gate-developer-reads
+  labels:
+    {{- include "gate.labels" . | nindent 4 }}
+    kuberoam.dev/aggregate-to-developer: "true"
+rules:
+  - apiGroups: [""]
+    resources: [nodes, persistentvolumes]
+    verbs: [get, list, watch]
+  - apiGroups: [storage.k8s.io]
+    resources: [storageclasses]
+    verbs: [get, list, watch]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingressclasses]
+    verbs: [get, list, watch]
+  - apiGroups: [apiextensions.k8s.io]
+    resources: [customresourcedefinitions]
+    verbs: [get, list, watch]
+  - apiGroups: [metrics.k8s.io]
+    resources: [pods, nodes]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: roam-gate-techlead-changes
+  labels:
+    {{- include "gate.labels" . | nindent 4 }}
+    kuberoam.dev/aggregate-to-techlead: "true"
+rules:
+  # Workloads: deploy, scale, restart, roll back.
+  - apiGroups: [apps]
+    resources: [deployments, statefulsets, daemonsets, replicasets, deployments/scale, statefulsets/scale, replicasets/scale]
+    verbs: [create, update, patch, delete]
+  - apiGroups: [batch]
+    resources: [jobs, cronjobs]
+    verbs: [create, update, patch, delete]
+  - apiGroups: [autoscaling]
+    resources: [horizontalpodautoscalers]
+    verbs: [create, update, patch, delete]
+  - apiGroups: [policy]
+    resources: [poddisruptionbudgets]
+    verbs: [create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [delete] # restart a pod
+  - apiGroups: [""]
+    resources: [pods/eviction]
+    verbs: [create]
+  # Config and how workloads are reached.
+  - apiGroups: [""]
+    resources: [configmaps, services]
+    verbs: [create, update, patch, delete]
+  - apiGroups: [networking.k8s.io]
+    resources: [ingresses]
+    verbs: [create, update, patch, delete]
+  # Secrets are read, never written.
+  - apiGroups: [""]
+    resources: [secrets]
+    verbs: [get, list, watch]
+  # Debugging.
+  - apiGroups: [""]
+    resources: [pods/portforward, pods/exec, pods/attach]
+    verbs: [get, create]
