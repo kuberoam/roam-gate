@@ -10,6 +10,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -422,5 +423,66 @@ func TestLoginFromTheApp(t *testing.T) {
 	st.SaveProvider(ctx, &store.Provider{ID: "other", Type: "oidc", Name: "Other", Enabled: true})
 	if w := get("/login?app=1"); w.Code != 200 {
 		t.Fatalf("a choice to make: %d", w.Code)
+	}
+}
+
+// Gate's own 4 groups: listed with their role and members, admin-only, and
+// only one of the 4 names is accepted.
+func TestLocalGroups(t *testing.T) {
+	st, err := store.Open(t.TempDir(), make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	cfg := &config.Config{SecretKey: make([]byte, 32), AdminToken: "bootstrap-admin-token"}
+	sessions := auth.NewSessions(st, time.Hour, cfg.AdminToken, nil, nil)
+	gate := httptest.NewServer(New(Deps{Config: cfg, Store: st, Recorder: audit.New(st, nil), Sessions: sessions, Proxy: &proxy.Proxy{}}))
+	defer gate.Close()
+
+	call := func(method, path, token string) *http.Response {
+		t.Helper()
+		req, _ := http.NewRequest(method, gate.URL+path, nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+
+	if resp := call("GET", "/api/v1/local-groups", ""); resp.StatusCode != 401 {
+		t.Fatalf("without a token: %d", resp.StatusCode)
+	}
+	if resp := call("PUT", "/api/v1/local-groups/not-a-role/members/alice@corp.com", "bootstrap-admin-token"); resp.StatusCode != 400 {
+		t.Fatalf("unknown group: %d", resp.StatusCode)
+	}
+	if resp := call("PUT", "/api/v1/local-groups/developer/members/alice@corp.com", "bootstrap-admin-token"); resp.StatusCode != 204 {
+		t.Fatalf("add member: %d", resp.StatusCode)
+	}
+	resp := call("GET", "/api/v1/local-groups", "bootstrap-admin-token")
+	var groups []localGroupOut
+	if err := json.NewDecoder(resp.Body).Decode(&groups); err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if len(groups) != 4 {
+		t.Fatalf("groups: %+v", groups)
+	}
+	for _, g := range groups {
+		if g.Group == "developer" {
+			if g.Role != "roam-gate-developer" || !slices.Contains(g.Members, "alice@corp.com") {
+				t.Fatalf("developer: %+v", g)
+			}
+		} else if len(g.Members) != 0 {
+			t.Fatalf("%s should have no members yet: %+v", g.Group, g)
+		}
+	}
+	if resp := call("DELETE", "/api/v1/local-groups/developer/members/alice@corp.com", "bootstrap-admin-token"); resp.StatusCode != 204 {
+		t.Fatalf("remove member: %d", resp.StatusCode)
+	}
+	if groups, _ := st.LocalGroupsOf(context.Background(), "alice@corp.com"); len(groups) != 0 {
+		t.Fatalf("still a member: %v", groups)
 	}
 }

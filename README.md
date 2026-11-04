@@ -124,6 +124,10 @@ With `scope: namespaces` the API server refuses lists and watches across all nam
 
 On EKS clusters that use access entries instead of `aws-auth`, Roam adds the access entry with your AWS credentials; Gate still manages the RBAC side.
 
+### Gate's own groups
+
+Besides groups from a sign-in provider, every Gate has 4 of its own — `roam-gate:developer`, `roam-gate:techlead`, `roam-gate:admin` and `roam-gate:cluster-admin` — already bound to the matching role, cluster-wide (the install seeds these 4 bindings, visible and editable like any other). Add someone to one with `PUT /api/v1/local-groups/{group}/members/{user}` (`{group}` is the short name — `developer`, `techlead`, `admin` or `cluster-admin` — `{user}` their Gate user ID) and they get that role at their next sign-in, with no binding to create by hand; `DELETE` the same path removes them. `GET /api/v1/local-groups` lists all 4 with their role and current members. Like any other group, membership is only read again at sign-in — not mid-session.
+
 ## Signing in from apps and the CLI
 
 Apps sign in through the browser and get the token back on their own computer (RFC 8252 loopback):
@@ -153,6 +157,7 @@ All endpoints take `Authorization: Bearer <token>` (or `X-Roam-Gate-Token: <toke
 | `GET /api/v1/me` · `POST /api/v1/logout` · `GET /api/v1/kubeconfig` | The signed-in person |
 | `GET/POST /api/v1/providers` · `PUT/DELETE /api/v1/providers/{id}` · `POST …/{id}/test` | Sign-in providers |
 | `GET /api/v1/users` · `PATCH /api/v1/users/{id}` (`{"disabled":true}`) · `GET /api/v1/groups` | People who signed in |
+| `GET /api/v1/local-groups` · `PUT/DELETE /api/v1/local-groups/{group}/members/{user}` | Gate's own 4 groups and their members |
 | `GET/POST /api/v1/bindings` · `PUT/DELETE /api/v1/bindings/{id}` | Permissions |
 | `GET /api/v1/sessions` · `DELETE /api/v1/sessions/{id}` | Active sessions |
 | `GET /api/v1/audit?user=&kind=&verb=&namespace=&resource=&q=&denied=true&since=&until=&before=&limit=` | Audit trail |

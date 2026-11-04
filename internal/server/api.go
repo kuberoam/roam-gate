@@ -15,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/kuberoam/roam-gate/internal/auth"
+	"github.com/kuberoam/roam-gate/internal/identity"
 	"github.com/kuberoam/roam-gate/internal/msg"
 	"github.com/kuberoam/roam-gate/internal/policy"
 	"github.com/kuberoam/roam-gate/internal/proxy"
@@ -274,6 +275,57 @@ func (s *Server) listGroups(w http.ResponseWriter, r *http.Request, _ *auth.Prin
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	writeJSON(w, http.StatusOK, out)
+}
+
+// ------------------------------------------------------------ local groups
+
+type localGroupOut struct {
+	Group   string   `json:"group"`
+	Role    string   `json:"role"`
+	Members []string `json:"members"`
+}
+
+func (s *Server) listLocalGroups(w http.ResponseWriter, r *http.Request, _ *auth.Principal) {
+	members, err := s.st.LocalGroupMembers(r.Context())
+	if err != nil {
+		fail(w, r, 0, err)
+		return
+	}
+	names := make([]string, 0, len(identity.LocalGroupRoles))
+	for name := range identity.LocalGroupRoles {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]localGroupOut, 0, len(names))
+	for _, name := range names {
+		ms := slices.Clone(members[name])
+		sort.Strings(ms)
+		out = append(out, localGroupOut{Group: name, Role: identity.LocalGroupRoles[name], Members: ms})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) setLocalGroupMember(w http.ResponseWriter, r *http.Request, p *auth.Principal) {
+	group, user := r.PathValue("group"), strings.ToLower(strings.TrimSpace(r.PathValue("user")))
+	if _, ok := identity.LocalGroupRoles[group]; !ok {
+		fail(w, r, http.StatusBadRequest, msg.New(msg.GroupUnknown, "group", group))
+		return
+	}
+	if user == "" {
+		fail(w, r, http.StatusBadRequest, msg.New(msg.UserRequired))
+		return
+	}
+	member := r.Method == http.MethodPut
+	if err := s.st.SetLocalGroupMember(r.Context(), group, user, p.Name(), member); err != nil {
+		fail(w, r, 0, err)
+		return
+	}
+	action := store.ActionGroupLeave
+	if member {
+		action = store.ActionGroupJoin
+	}
+	s.adminEvent(r, p, action, user, map[string]any{"group": group})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // ----------------------------------------------------------------- bindings

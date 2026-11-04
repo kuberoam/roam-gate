@@ -60,3 +60,21 @@ func KubeGroups(groupIDs []string) []string {
 	}
 	return out
 }
+
+// LocalGroupProvider names Gate itself as the "provider" of its own groups,
+// the same way an identity provider's groups are named "<provider>:<group>".
+const LocalGroupProvider = "roam-gate"
+
+// LocalGroupRoles are Gate's own groups, one per role it offers besides
+// Kubernetes' built-in admin and cluster-admin: putting someone in one,
+// instead of a Binding made for them individually, grants the role it maps
+// to at once, through a Binding the chart seeds for each at install.
+var LocalGroupRoles = map[string]string{
+	"developer":     "roam-gate-developer",
+	"techlead":      "roam-gate-techlead",
+	"admin":         "admin",
+	"cluster-admin": "cluster-admin",
+}
+
+// LocalGroupID is the Gate group ID for one of Gate's own groups.
+func LocalGroupID(name string) string { return LocalGroupProvider + ":" + name }

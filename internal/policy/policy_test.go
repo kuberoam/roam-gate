@@ -101,7 +101,7 @@ func TestReconcileCreatesRepairsAndCleansUp(t *testing.T) {
 		t.Fatal(err)
 	}
 	objs, _ := r.ManagedObjects(ctx)
-	if len(objs) != 0 {
+	if len(objs) != 4 { // Gate's own seeded groups, never deleted here
 		t.Fatalf("left behind: %v", objs)
 	}
 	if _, err := cs.RbacV1().RoleBindings("prod").Get(ctx, "someone-elses", metav1.GetOptions{}); err != nil {

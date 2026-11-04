@@ -38,6 +38,59 @@ func TestProvidersAreEncrypted(t *testing.T) {
 	}
 }
 
+func TestLocalGroupsAreSeeded(t *testing.T) {
+	st := open(t)
+	bindings, err := st.Bindings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"roam-gate:developer": "roam-gate-developer", "roam-gate:techlead": "roam-gate-techlead", "roam-gate:admin": "admin", "roam-gate:cluster-admin": "cluster-admin"}
+	for _, b := range bindings {
+		if b.SubjectKind != SubjectGroup || b.Scope != ScopeCluster {
+			continue
+		}
+		if role, ok := want[b.Subject]; ok {
+			if b.Role != role {
+				t.Errorf("%s: role %s, want %s", b.Subject, b.Role, role)
+			}
+			delete(want, b.Subject)
+		}
+	}
+	if len(want) != 0 {
+		t.Fatalf("not seeded: %v", want)
+	}
+}
+
+func TestLocalGroupMembers(t *testing.T) {
+	st := open(t)
+	ctx := context.Background()
+	if err := st.SetLocalGroupMember(ctx, "developer", "alice@corp.com", "admin@corp.com", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetLocalGroupMember(ctx, "developer", "bob@corp.com", "admin@corp.com", true); err != nil {
+		t.Fatal(err)
+	}
+	// Adding someone already in: no error, no duplicate.
+	if err := st.SetLocalGroupMember(ctx, "developer", "alice@corp.com", "admin@corp.com", true); err != nil {
+		t.Fatal(err)
+	}
+	groups, err := st.LocalGroupsOf(ctx, "alice@corp.com")
+	if err != nil || len(groups) != 1 || groups[0] != "developer" {
+		t.Fatalf("%v %v", groups, err)
+	}
+	members, err := st.LocalGroupMembers(ctx)
+	if err != nil || len(members["developer"]) != 2 {
+		t.Fatalf("%v %v", members, err)
+	}
+	if err := st.SetLocalGroupMember(ctx, "developer", "alice@corp.com", "admin@corp.com", false); err != nil {
+		t.Fatal(err)
+	}
+	groups, _ = st.LocalGroupsOf(ctx, "alice@corp.com")
+	if len(groups) != 0 {
+		t.Fatalf("still a member: %v", groups)
+	}
+}
+
 func TestSessions(t *testing.T) {
 	st := open(t)
 	ctx := context.Background()

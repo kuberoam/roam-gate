@@ -56,7 +56,7 @@ func TestSecondGateStandsBy(t *testing.T) {
 	if len(l.Subjects) != 0 || l.Labels[kube.LabelBinding] != "" {
 		t.Fatalf("lock: %+v", l)
 	}
-	if objs, _ := a.ManagedObjects(ctx); len(objs) != 1 {
+	if objs, _ := a.ManagedObjects(ctx); len(objs) != 5 { // a1, plus Gate's own 4 seeded groups
 		t.Fatalf("managed objects: %v", objs)
 	}
 
@@ -148,7 +148,7 @@ func TestGateTouchesOnlyItsOwnObjects(t *testing.T) {
 	if b1 := get("roam-gate-b1"); b1 == nil || b1.Labels[kube.LabelInstance] != id {
 		t.Fatalf("not adopted: %+v", b1)
 	}
-	if objs, _ := r.ManagedObjects(ctx); len(objs) != 2 { // b1 and a1's
+	if objs, _ := r.ManagedObjects(ctx); len(objs) != 6 { // b1 and a1's, plus Gate's own 4 seeded groups
 		t.Fatalf("managed objects: %v", objs)
 	}
 	got, _ := cs.CoreV1().ConfigMaps("kube-system").Get(ctx, "aws-auth", metav1.GetOptions{})

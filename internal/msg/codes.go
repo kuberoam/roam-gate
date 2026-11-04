@@ -54,6 +54,8 @@ const (
 	UserPatchInvalid     Code = "api.userPatchInvalid"
 	TimeInvalid          Code = "api.timeInvalid"
 	APIServerUnreachable Code = "api.apiServerUnreachable"
+	GroupUnknown         Code = "api.groupUnknown"
+	UserRequired         Code = "api.userRequired"
 )
 
 // Bindings and their reconcile status.

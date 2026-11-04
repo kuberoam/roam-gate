@@ -64,6 +64,13 @@ func (s *Sessions) Start(ctx context.Context, id *identity.Identity, ip, ua stri
 		return "", nil, msg.New(msg.AccountDisabled)
 	}
 	groups := id.GroupIDs()
+	// Gate's own groups (identity.LocalGroupRoles) count too, same as any
+	// other group; a DB hiccup here shouldn't keep someone from signing in.
+	if locals, err := s.st.LocalGroupsOf(ctx, userID); err == nil {
+		for _, g := range locals {
+			groups = append(groups, identity.LocalGroupID(g))
+		}
+	}
 	if err := s.st.SeenUser(ctx, &store.User{ID: userID, Provider: id.Provider, Name: id.Name, Email: id.Email, Groups: groups}); err != nil {
 		return "", nil, err
 	}

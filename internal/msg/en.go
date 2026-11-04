@@ -50,6 +50,8 @@ var en = map[Code]string{
 	UserPatchInvalid:     `Send {"disabled": true} or {"disabled": false}.`,
 	APIServerUnreachable: "Gate could not reach the Kubernetes API server.",
 	TimeInvalid:          "{field}: use RFC 3339, e.g. 2026-10-01T00:00:00Z.",
+	GroupUnknown:         "{group} is not one of Gate's own groups.",
+	UserRequired:         "Say who to add or remove.",
 
 	SubjectRequired:    "Say who gets access.",
 	SubjectKindUnknown: "Unknown kind of subject {kind}.",

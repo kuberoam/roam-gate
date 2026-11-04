@@ -305,6 +305,56 @@ func (s *Store) Groups(ctx context.Context) (map[string]int, error) {
 	return out, nil
 }
 
+// ------------------------------------------------------------ local groups
+
+// LocalGroupMembers lists who is in each of Gate's own groups
+// (identity.LocalGroupRoles).
+func (s *Store) LocalGroupMembers(ctx context.Context) (map[string][]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT group_name, user_id FROM local_group_members ORDER BY user_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]string{}
+	for rows.Next() {
+		var group, user string
+		if err := rows.Scan(&group, &user); err != nil {
+			return nil, err
+		}
+		out[group] = append(out[group], user)
+	}
+	return out, rows.Err()
+}
+
+// LocalGroupsOf returns the Gate groups userID is a member of.
+func (s *Store) LocalGroupsOf(ctx context.Context, userID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT group_name FROM local_group_members WHERE user_id = ?`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var group string
+		if err := rows.Scan(&group); err != nil {
+			return nil, err
+		}
+		out = append(out, group)
+	}
+	return out, rows.Err()
+}
+
+// SetLocalGroupMember adds or removes userID from one of Gate's own groups.
+func (s *Store) SetLocalGroupMember(ctx context.Context, group, userID, addedBy string, member bool) error {
+	if !member {
+		_, err := s.db.ExecContext(ctx, `DELETE FROM local_group_members WHERE group_name = ? AND user_id = ?`, group, userID)
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO local_group_members (group_name, user_id, added_by, added) VALUES (?, ?, ?, ?) ON CONFLICT(group_name, user_id) DO NOTHING`,
+		group, userID, addedBy, time.Now().UnixMilli())
+	return err
+}
+
 // ----------------------------------------------------------------- sessions
 
 // Session is a signed-in user's credential for the proxy and the API. Only
@@ -626,6 +676,8 @@ const (
 	ActionBindingUpdate  = "binding.update"
 	ActionBindingDelete  = "binding.delete"
 	ActionSessionRevoke  = "session.revoke"
+	ActionGroupJoin      = "group.join"
+	ActionGroupLeave     = "group.leave"
 )
 
 // Event is one line of the audit trail.

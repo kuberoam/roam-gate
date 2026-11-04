@@ -50,6 +50,8 @@ var vi = map[Code]string{
 	UserPatchInvalid:     `Gửi {"disabled": true} hoặc {"disabled": false}.`,
 	APIServerUnreachable: "Gate không kết nối được Kubernetes API server.",
 	TimeInvalid:          "{field}: dùng định dạng RFC 3339, ví dụ 2026-10-01T00:00:00Z.",
+	GroupUnknown:         "{group} không phải group có sẵn của Gate.",
+	UserRequired:         "Hãy cho biết thêm hay bớt ai.",
 
 	SubjectRequired:    "Hãy chọn người được cấp quyền.",
 	SubjectKindUnknown: "Không rõ loại đối tượng {kind}.",
