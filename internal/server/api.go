@@ -298,7 +298,7 @@ func (s *Server) listLocalGroups(w http.ResponseWriter, r *http.Request, _ *auth
 	sort.Strings(names)
 	out := make([]localGroupOut, 0, len(names))
 	for _, name := range names {
-		ms := slices.Clone(members[name])
+		ms := append([]string{}, members[name]...) // never nil: an empty group must encode as [], not null
 		sort.Strings(ms)
 		out = append(out, localGroupOut{Group: name, Role: identity.LocalGroupRoles[name], Members: ms})
 	}

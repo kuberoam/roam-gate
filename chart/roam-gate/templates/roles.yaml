@@ -30,7 +30,8 @@ aggregationRule:
         rbac.authorization.k8s.io/aggregate-to-view: "true"
     - matchLabels:
         kuberoam.dev/aggregate-to-developer: "true"
-rules: [] # filled in by the aggregation controller
+# No rules: the aggregation controller owns them. Writing rules: [] here makes
+# Helm's server-side apply fight that controller, and the upgrade fails.
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
@@ -46,7 +47,6 @@ aggregationRule:
         kuberoam.dev/aggregate-to-developer: "true"
     - matchLabels:
         kuberoam.dev/aggregate-to-techlead: "true"
-rules: []
 ---
 # What a developer reads beyond view. Read only: nothing here, nor in
 # techlead, changes a node. The cluster-scoped kinds count only

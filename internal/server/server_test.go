@@ -458,6 +458,14 @@ func TestLocalGroups(t *testing.T) {
 	if resp := call("PUT", "/api/v1/local-groups/not-a-role/members/alice@corp.com", "bootstrap-admin-token"); resp.StatusCode != 400 {
 		t.Fatalf("unknown group: %d", resp.StatusCode)
 	}
+	// An empty group is [] on the wire, never null: Roam desktop called
+	// members.includes on null and the whole Gate screen crashed.
+	empty := call("GET", "/api/v1/local-groups", "bootstrap-admin-token")
+	raw, _ := io.ReadAll(empty.Body)
+	empty.Body.Close()
+	if strings.Contains(string(raw), `"members":null`) || !strings.Contains(string(raw), `"members":[]`) {
+		t.Fatalf("empty groups must encode members as []: %s", raw)
+	}
 	if resp := call("PUT", "/api/v1/local-groups/developer/members/alice@corp.com", "bootstrap-admin-token"); resp.StatusCode != 204 {
 		t.Fatalf("add member: %d", resp.StatusCode)
 	}
