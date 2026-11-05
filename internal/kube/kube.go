@@ -75,6 +75,16 @@ func (c *Client) Transport() (http.RoundTripper, error) {
 	// The proxy passes client requests through untouched apart from auth;
 	// client-go's own rate limiter and user agent don't belong on them.
 	cfg.UserAgent = ""
+	// exec, attach, portforward and the raw subresource proxy upgrade the
+	// connection with "Connection: Upgrade"/"Upgrade: SPDY/3.1", which HTTP/2
+	// has no room for (RFC 7540 drops the Upgrade mechanism). Left alone,
+	// client-go auto-negotiates h2 with the API server (SetTransportDefaults),
+	// and golang.org/x/net/http2's Transport then refuses any request that
+	// carries an Upgrade header before it's even sent ("http2: invalid
+	// Upgrade request header"), so every one of those four subresources 502s
+	// once the pooled connection to the API server has negotiated h2. Pin
+	// this shared transport to HTTP/1.1, which these calls need regardless.
+	cfg.NextProtos = []string{"http/1.1"}
 	return rest.TransportFor(cfg)
 }
 
