@@ -133,7 +133,13 @@ func ClientIP(r *http.Request) string {
 	return host
 }
 
-func internal(ip net.IP) bool { return ip != nil && (ip.IsPrivate() || ip.IsLoopback()) }
+// RFC 6598 shared address space: GKE's (and some other CNIs') default Pod CIDR
+// (e.g. 100.96.0.0/11) lives here. net.IP.IsPrivate only covers RFC 1918, so
+// without this an Ingress controller's own Pod IP looks like a real client
+// address and ClientIP returns it instead of reading X-Forwarded-For.
+var cgnat = func() *net.IPNet { _, n, _ := net.ParseCIDR("100.64.0.0/10"); return n }()
+
+func internal(ip net.IP) bool { return ip != nil && (ip.IsPrivate() || ip.IsLoopback() || cgnat.Contains(ip)) }
 
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()

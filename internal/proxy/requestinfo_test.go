@@ -49,6 +49,8 @@ func TestClientIP(t *testing.T) {
 		{"10.0.0.5:1234", "6.6.6.6, 198.51.100.7", "198.51.100.7"},  // a spoofed entry on the left is ignored
 		{"10.0.0.5:1234", "198.51.100.7, 10.1.2.3", "198.51.100.7"}, // through two proxies
 		{"10.0.0.5:1234", "", "10.0.0.5"},                           // in-cluster, no proxy
+		{"100.96.1.13:1234", "198.51.100.7", "198.51.100.7"},        // behind the ingress on GKE's Pod CIDR (100.64.0.0/10)
+		{"100.96.1.13:1234", "", "100.96.1.13"},                     // in-cluster, no proxy, same CIDR
 	}
 	for _, c := range cases {
 		r := httptest.NewRequest("GET", "/", nil)
